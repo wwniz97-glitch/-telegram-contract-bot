@@ -2,6 +2,7 @@ import base64
 import calendar
 import json
 import logging
+import mimetypes
 import os
 import re
 import urllib.error
@@ -910,9 +911,13 @@ def extract_json(text):
     return json.loads(match.group(0))
 
 
+def image_mime_type(photo_path):
+    return mimetypes.guess_type(photo_path.name)[0] or "image/jpeg"
+
+
 def photo_to_data_url(photo_path):
     encoded = base64.b64encode(photo_path.read_bytes()).decode("utf-8")
-    return f"data:image/jpeg;base64,{encoded}"
+    return f"data:{image_mime_type(photo_path)};base64,{encoded}"
 
 
 def yandex_request(url, payload, headers):
@@ -968,7 +973,11 @@ def yandex_ocr_text(photo_path):
     for model in models:
         payload = {
             "content": content,
-            "mimeType": "JPEG",
+            "mimeType": {
+                "image/jpeg": "JPEG",
+                "image/png": "PNG",
+                "image/webp": "WEBP",
+            }.get(image_mime_type(photo_path), "JPEG"),
             "languageCodes": ["ru", "en"] if model in ("handwritten", "table") else ["*"],
             "model": model,
         }
@@ -1740,7 +1749,16 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     stage, _ = STAGES[index]
-    file_id = update.message.photo[-1].file_id
+    if update.message.photo:
+        file_id = update.message.photo[-1].file_id
+        suffix = ".jpg"
+    elif update.message.document and (update.message.document.mime_type or "").startswith("image/"):
+        file_id = update.message.document.file_id
+        suffix = Path(update.message.document.file_name or "").suffix or ".jpg"
+    else:
+        await update.message.reply_text("Пришли фото или файл-картинку: JPEG, PNG или WEBP.", reply_markup=MAIN_KEYBOARD)
+        return
+
     message_id = update.message.message_id
     await delete_last_prompt(update, context)
 
@@ -1750,7 +1768,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["mode"] = "price"
     save_session(update, session)
 
-    photo_path = PHOTO_DIR / f"{chat_id(update)}_{stage}_{update.message.message_id}.jpg"
+    photo_path = PHOTO_DIR / f"{chat_id(update)}_{stage}_{update.message.message_id}{suffix}"
     context.application.create_task(
         recognize_photo_background(context.bot, chat_id(update), session["deal_id"], file_id, photo_path, stage)
     )
@@ -1969,7 +1987,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_edit_button, pattern=r"^edit:"))
     app.add_handler(CallbackQueryHandler(handle_field_button, pattern=r"^field:"))
     app.add_handler(MessageHandler(filters.CONTACT, handle_contact))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.run_polling()
 
