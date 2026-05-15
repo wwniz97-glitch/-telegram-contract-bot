@@ -5,8 +5,9 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      DATA_DIR: /app/data
     volumes:
-      - ./data/deals.json:/app/deals.json
-      - ./data/users.json:/app/users.json
+      - ./data:/app/data
       - ./contracts:/app/contracts
       - ./tmp_photos:/app/tmp_photos

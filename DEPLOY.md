@@ -19,9 +19,9 @@
 
 ```bash
 mkdir -p data contracts tmp_photos
-printf '{}' > data/deals.json
-printf '{}' > data/users.json
 ```
+
+Файлы `data/deals.json` и `data/users.json` бот создаст сам при первом запуске.
 
 ## 3. Настроить .env
 

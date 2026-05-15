@@ -1,6 +1,7 @@
 import base64
 import calendar
 import json
+import logging
 import os
 import re
 import urllib.error
@@ -18,6 +19,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton,
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -30,14 +33,15 @@ YOOKASSA_RETURN_URL = os.getenv("YOOKASSA_RETURN_URL", "https://t.me/")
 CONTRACT_PRICE_RUB = os.getenv("CONTRACT_PRICE_RUB", "300")
 PAYMENTS_ENABLED = os.getenv("PAYMENTS_ENABLED", "true").lower() == "true"
 FREE_CONTRACT_LIMIT = int(os.getenv("FREE_CONTRACT_LIMIT", "2"))
+DATA_DIR = Path(os.getenv("DATA_DIR", "."))
 TEST_MODE_NOTICE = (
     "Бот работает в тестовом режиме. Возможны ошибки распознавания, поэтому перед подписанием "
     "обязательно проверь все данные в договоре вручную.\n\n"
     f"В тестовом режиме доступно {FREE_CONTRACT_LIMIT} генерации договора."
 )
 
-DATA_FILE = Path("deals.json")
-USERS_FILE = Path("users.json")
+DATA_FILE = DATA_DIR / "deals.json"
+USERS_FILE = DATA_DIR / "users.json"
 OUTPUT_DIR = Path("contracts")
 PHOTO_DIR = Path("tmp_photos")
 TEMPLATE_FILE = Path("template.docx")
@@ -354,11 +358,37 @@ TEMPLATE_VALUES = {
 }
 
 
+def ensure_json_file(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_dir():
+        raise RuntimeError(
+            f"{path} is a directory, but a JSON file is required. "
+            "Remove that directory on the server and restart the bot."
+        )
+    if not path.exists() or not path.read_text(encoding="utf-8").strip():
+        path.write_text("{}", encoding="utf-8")
+
+
+def load_json_file(path):
+    ensure_json_file(path)
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            return json.load(file)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"{path} contains invalid JSON. Replace it with {{}} and restart the bot.") from error
+
+
+def ensure_storage():
+    ensure_json_file(DATA_FILE)
+    ensure_json_file(USERS_FILE)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    PHOTO_DIR.mkdir(parents=True, exist_ok=True)
+
+
 def load_data():
     if not DATA_FILE.exists():
         return {}
-    with DATA_FILE.open("r", encoding="utf-8") as file:
-        return json.load(file)
+    return load_json_file(DATA_FILE)
 
 
 def save_data(data):
@@ -369,8 +399,7 @@ def save_data(data):
 def load_users():
     if not USERS_FILE.exists():
         return {}
-    with USERS_FILE.open("r", encoding="utf-8") as file:
-        return json.load(file)
+    return load_json_file(USERS_FILE)
 
 
 def save_users(users):
@@ -1773,6 +1802,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError("Добавь TELEGRAM_BOT_TOKEN в файл .env")
+
+    ensure_storage()
+    logger.info("Starting Telegram contract bot. Data directory: %s", DATA_DIR)
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
