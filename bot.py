@@ -930,22 +930,44 @@ def yandex_request(url, payload, headers):
         raise RuntimeError(f"Не удалось подключиться к Yandex API: {error}") from error
 
 
+def yandex_text_from_annotation(annotation):
+    full_text = annotation.get("fullText", "").strip()
+    if full_text:
+        return full_text
+
+    lines = []
+    for block in annotation.get("blocks", []):
+        for line in block.get("lines", []):
+            line_text = line.get("text", "").strip()
+            if line_text:
+                lines.append(line_text)
+                continue
+            words = [word.get("text", "").strip() for word in line.get("words", [])]
+            word_text = " ".join(word for word in words if word)
+            if word_text:
+                lines.append(word_text)
+    return "\n".join(lines).strip()
+
+
 def yandex_ocr_text(photo_path):
     if not YANDEX_API_KEY:
         raise RuntimeError("Добавь YANDEX_API_KEY в файл .env")
 
     payload = {
         "content": base64.b64encode(photo_path.read_bytes()).decode("utf-8"),
-        "mimeType": "image/jpeg",
-        "languageCodes": ["ru", "en"],
+        "mimeType": "JPEG",
+        "languageCodes": ["*"],
         "model": YANDEX_OCR_MODEL,
     }
+    headers = {"Authorization": f"Api-Key {YANDEX_API_KEY}"}
+    if YANDEX_FOLDER_ID:
+        headers["x-folder-id"] = YANDEX_FOLDER_ID
     result = yandex_request(
         "https://ocr.api.cloud.yandex.net/ocr/v1/recognizeText",
         payload,
-        {"Authorization": f"Api-Key {YANDEX_API_KEY}"},
+        headers,
     )
-    text = result.get("textAnnotation", {}).get("fullText", "").strip()
+    text = yandex_text_from_annotation(result.get("textAnnotation", {}))
     logger.info("Yandex OCR recognized %s characters", len(text))
     if not text:
         raise RuntimeError("Yandex OCR не распознал текст на фото")
