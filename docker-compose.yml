@@ -1,0 +1,12 @@
+services:
+  telegram-contract-bot:
+    build: .
+    container_name: telegram-contract-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data/deals.json:/app/deals.json
+      - ./data/users.json:/app/users.json
+      - ./contracts:/app/contracts
+      - ./tmp_photos:/app/tmp_photos

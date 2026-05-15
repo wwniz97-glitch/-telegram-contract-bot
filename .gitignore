@@ -1,0 +1,9 @@
+.env
+deals.json
+contracts/
+tmp_photos/
+__pycache__/
+*.pyc
+.venv/
+users.json
+payments.json
