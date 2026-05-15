@@ -967,14 +967,18 @@ def yandex_ocr_text(photo_path):
         payload = {
             "content": content,
             "mimeType": "JPEG",
-            "languageCodes": ["*"],
+            "languageCodes": ["ru", "en"] if model in ("handwritten", "table") else ["*"],
             "model": model,
         }
-        result = yandex_request(
-            "https://ocr.api.cloud.yandex.net/ocr/v1/recognizeText",
-            payload,
-            headers,
-        )
+        try:
+            result = yandex_request(
+                "https://ocr.api.cloud.yandex.net/ocr/v1/recognizeText",
+                payload,
+                headers,
+            )
+        except RuntimeError as error:
+            logger.warning("Yandex OCR model %s failed: %s", model, error)
+            continue
         text = yandex_text_from_annotation(result.get("textAnnotation", {}))
         logger.info("Yandex OCR model %s recognized %s characters", model, len(text))
         if text:
