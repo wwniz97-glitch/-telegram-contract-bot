@@ -946,6 +946,7 @@ def yandex_ocr_text(photo_path):
         {"Authorization": f"Api-Key {YANDEX_API_KEY}"},
     )
     text = result.get("textAnnotation", {}).get("fullText", "").strip()
+    logger.info("Yandex OCR recognized %s characters", len(text))
     if not text:
         raise RuntimeError("Yandex OCR не распознал текст на фото")
     return text
@@ -980,6 +981,7 @@ def yandex_extract_data(prompt, recognized_text):
         {"Authorization": f"Api-Key {YANDEX_API_KEY}", "OpenAI-Project": YANDEX_FOLDER_ID},
     )
     content = result["choices"][0]["message"]["content"]
+    logger.info("Yandex GPT returned %s characters", len(content))
     return clean_extracted_data(extract_json(content))
 
 
@@ -1630,11 +1632,14 @@ async def recognize_photo_background(bot, chat, deal_id, file_id, photo_path, st
         return
 
     try:
+        logger.info("Recognizing photo: chat=%s stage=%s provider=%s", chat, stage, AI_PROVIDER)
         PHOTO_DIR.mkdir(exist_ok=True)
         telegram_file = await bot.get_file(file_id)
         await telegram_file.download_to_drive(photo_path)
         extracted = recognize_document(photo_path, stage)
+        logger.info("Recognized fields for stage %s: %s", stage, sorted(extracted.keys()))
     except Exception:
+        logger.exception("Photo recognition failed: chat=%s stage=%s provider=%s", chat, stage, AI_PROVIDER)
         await bot.send_message(
             chat_id=chat,
             text="Одно фото не получилось прочитать. Потом можно дописать данные через «Исправить поле».",
