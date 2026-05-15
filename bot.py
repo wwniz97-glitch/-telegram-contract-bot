@@ -31,6 +31,8 @@ YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
 YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID")
 YANDEX_GPT_MODEL = os.getenv("YANDEX_GPT_MODEL", "yandexgpt-lite/latest")
 YANDEX_OCR_MODEL = os.getenv("YANDEX_OCR_MODEL", "page")
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
+MISTRAL_OCR_MODEL = os.getenv("MISTRAL_OCR_MODEL", "mistral-ocr-latest")
 CLEAN_CHAT = os.getenv("CLEAN_CHAT", "true").lower() == "true"
 ADMIN_IDS = {admin_id.strip() for admin_id in os.getenv("ADMIN_IDS", "").split(",") if admin_id.strip()}
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "")
@@ -987,6 +989,30 @@ def yandex_ocr_text(photo_path):
     raise RuntimeError("Yandex OCR не распознал текст на фото")
 
 
+def mistral_ocr_text(photo_path):
+    if not MISTRAL_API_KEY:
+        raise RuntimeError("Добавь MISTRAL_API_KEY в файл .env")
+
+    payload = {
+        "model": MISTRAL_OCR_MODEL,
+        "document": {
+            "type": "image_url",
+            "image_url": {"url": photo_to_data_url(photo_path)},
+        },
+    }
+    result = yandex_request(
+        "https://api.mistral.ai/v1/ocr",
+        payload,
+        {"Authorization": f"Bearer {MISTRAL_API_KEY}"},
+    )
+    text = "\n\n".join(page.get("markdown", "").strip() for page in result.get("pages", []))
+    text = text.strip()
+    logger.info("Mistral OCR recognized %s characters", len(text))
+    if not text:
+        raise RuntimeError("Mistral OCR не распознал текст на фото")
+    return text
+
+
 def yandex_extract_data(prompt, recognized_text):
     if not YANDEX_API_KEY:
         raise RuntimeError("Добавь YANDEX_API_KEY в файл .env")
@@ -1094,8 +1120,11 @@ def recognize_document(photo_path, stage):
     if AI_PROVIDER == "yandex":
         recognized_text = yandex_ocr_text(photo_path)
         return yandex_extract_data(prompt, recognized_text)
+    if AI_PROVIDER == "mistral":
+        recognized_text = mistral_ocr_text(photo_path)
+        return yandex_extract_data(prompt, recognized_text)
     if AI_PROVIDER != "openai":
-        raise RuntimeError("AI_PROVIDER должен быть openai или yandex")
+        raise RuntimeError("AI_PROVIDER должен быть openai, yandex или mistral")
 
     client = OpenAI(api_key=OPENAI_API_KEY)
     request = {

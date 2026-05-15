@@ -45,6 +45,17 @@ YANDEX_GPT_MODEL=yandexgpt-lite/latest
 YANDEX_OCR_MODEL=page
 ```
 
+Для Mistral OCR + YandexGPT:
+
+```text
+AI_PROVIDER=mistral
+MISTRAL_API_KEY=...
+MISTRAL_OCR_MODEL=mistral-ocr-latest
+YANDEX_API_KEY=...
+YANDEX_FOLDER_ID=...
+YANDEX_GPT_MODEL=yandexgpt-lite/latest
+```
+
 Для ЮKassa позже:
 
 ```text
