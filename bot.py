@@ -953,25 +953,34 @@ def yandex_ocr_text(photo_path):
     if not YANDEX_API_KEY:
         raise RuntimeError("Добавь YANDEX_API_KEY в файл .env")
 
-    payload = {
-        "content": base64.b64encode(photo_path.read_bytes()).decode("utf-8"),
-        "mimeType": "JPEG",
-        "languageCodes": ["*"],
-        "model": YANDEX_OCR_MODEL,
-    }
+    content = base64.b64encode(photo_path.read_bytes()).decode("utf-8")
     headers = {"Authorization": f"Api-Key {YANDEX_API_KEY}"}
     if YANDEX_FOLDER_ID:
         headers["x-folder-id"] = YANDEX_FOLDER_ID
-    result = yandex_request(
-        "https://ocr.api.cloud.yandex.net/ocr/v1/recognizeText",
-        payload,
-        headers,
-    )
-    text = yandex_text_from_annotation(result.get("textAnnotation", {}))
-    logger.info("Yandex OCR recognized %s characters", len(text))
-    if not text:
-        raise RuntimeError("Yandex OCR не распознал текст на фото")
-    return text
+
+    models = [model.strip() for model in YANDEX_OCR_MODEL.split(",") if model.strip()]
+    for fallback_model in ("page-column-sort", "page", "handwritten"):
+        if fallback_model not in models:
+            models.append(fallback_model)
+
+    for model in models:
+        payload = {
+            "content": content,
+            "mimeType": "JPEG",
+            "languageCodes": ["*"],
+            "model": model,
+        }
+        result = yandex_request(
+            "https://ocr.api.cloud.yandex.net/ocr/v1/recognizeText",
+            payload,
+            headers,
+        )
+        text = yandex_text_from_annotation(result.get("textAnnotation", {}))
+        logger.info("Yandex OCR model %s recognized %s characters", model, len(text))
+        if text:
+            return text
+
+    raise RuntimeError("Yandex OCR не распознал текст на фото")
 
 
 def yandex_extract_data(prompt, recognized_text):
