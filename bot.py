@@ -24,8 +24,13 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+AI_PROVIDER = os.getenv("AI_PROVIDER", "openai").lower()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2")
+YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
+YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID")
+YANDEX_GPT_MODEL = os.getenv("YANDEX_GPT_MODEL", "yandexgpt-lite/latest")
+YANDEX_OCR_MODEL = os.getenv("YANDEX_OCR_MODEL", "page")
 CLEAN_CHAT = os.getenv("CLEAN_CHAT", "true").lower() == "true"
 ADMIN_IDS = {admin_id.strip() for admin_id in os.getenv("ADMIN_IDS", "").split(",") if admin_id.strip()}
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "")
@@ -908,8 +913,78 @@ def photo_to_data_url(photo_path):
     return f"data:image/jpeg;base64,{encoded}"
 
 
+def yandex_request(url, payload, headers):
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json", **headers},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        details = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Yandex API вернул ошибку {error.code}: {details}") from error
+    except urllib.error.URLError as error:
+        raise RuntimeError(f"Не удалось подключиться к Yandex API: {error}") from error
+
+
+def yandex_ocr_text(photo_path):
+    if not YANDEX_API_KEY:
+        raise RuntimeError("Добавь YANDEX_API_KEY в файл .env")
+
+    payload = {
+        "content": base64.b64encode(photo_path.read_bytes()).decode("utf-8"),
+        "mimeType": "image/jpeg",
+        "languageCodes": ["ru", "en"],
+        "model": YANDEX_OCR_MODEL,
+    }
+    result = yandex_request(
+        "https://ocr.api.cloud.yandex.net/ocr/v1/recognizeText",
+        payload,
+        {"Authorization": f"Api-Key {YANDEX_API_KEY}"},
+    )
+    text = result.get("textAnnotation", {}).get("fullText", "").strip()
+    if not text:
+        raise RuntimeError("Yandex OCR не распознал текст на фото")
+    return text
+
+
+def yandex_extract_data(prompt, recognized_text):
+    if not YANDEX_API_KEY:
+        raise RuntimeError("Добавь YANDEX_API_KEY в файл .env")
+    if not YANDEX_FOLDER_ID:
+        raise RuntimeError("Добавь YANDEX_FOLDER_ID в файл .env")
+
+    payload = {
+        "model": f"gpt://{YANDEX_FOLDER_ID}/{YANDEX_GPT_MODEL}",
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    f"{prompt}\n\n"
+                    "Ниже текст, распознанный OCR с фото документа. "
+                    "Заполняй JSON только по этому тексту, не придумывай данные.\n\n"
+                    f"{recognized_text}"
+                ),
+            }
+        ],
+        "temperature": 0,
+        "max_tokens": 2000,
+        "stream": False,
+    }
+    result = yandex_request(
+        "https://llm.api.cloud.yandex.net/v1/chat/completions",
+        payload,
+        {"Authorization": f"Api-Key {YANDEX_API_KEY}", "OpenAI-Project": YANDEX_FOLDER_ID},
+    )
+    content = result["choices"][0]["message"]["content"]
+    return clean_extracted_data(extract_json(content))
+
+
 def recognize_document(photo_path, stage):
-    if not OPENAI_API_KEY:
+    if AI_PROVIDER == "openai" and not OPENAI_API_KEY:
         raise RuntimeError("Добавь OPENAI_API_KEY в файл .env")
 
     section = STAGE_TO_SECTION[stage]
@@ -978,6 +1053,12 @@ def recognize_document(photo_path, stage):
   }}
 }}
 """.strip()
+
+    if AI_PROVIDER == "yandex":
+        recognized_text = yandex_ocr_text(photo_path)
+        return yandex_extract_data(prompt, recognized_text)
+    if AI_PROVIDER != "openai":
+        raise RuntimeError("AI_PROVIDER должен быть openai или yandex")
 
     client = OpenAI(api_key=OPENAI_API_KEY)
     request = {

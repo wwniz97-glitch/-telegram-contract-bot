@@ -35,6 +35,16 @@ PAYMENTS_ENABLED=false
 CLEAN_CHAT=true
 ```
 
+Если OpenAI API недоступен, можно включить Yandex Cloud:
+
+```text
+AI_PROVIDER=yandex
+YANDEX_API_KEY=...
+YANDEX_FOLDER_ID=...
+YANDEX_GPT_MODEL=yandexgpt-lite/latest
+YANDEX_OCR_MODEL=page
+```
+
 Для ЮKassa позже:
 
 ```text
