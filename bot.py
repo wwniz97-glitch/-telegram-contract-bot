@@ -212,15 +212,17 @@ FIELD_ALIASES = {
     "пробег": "vehicle.mileage",
 }
 
-MAIN_KEYBOARD = ReplyKeyboardMarkup(
-    [
-        ["📝 Новый договор", "🔍 Проверить данные"],
-        ["✏️ Исправить поле", "📄 Создать договор"],
-        ["💳 Проверить оплату"],
-        ["⏭️ Пропустить фото", "❌ Отменить"],
-        ["↩️ Шаг назад", "🧹 Очистить чат"],
-        ["📊 Админ"],
-    ],
+MAIN_KEYBOARD_ROWS = [
+    ["📝 Новый договор", "🔍 Проверить данные"],
+    ["✏️ Исправить поле", "📄 Создать договор"],
+    ["💳 Проверить оплату"],
+    ["⏭️ Пропустить фото", "❌ Отменить"],
+    ["↩️ Шаг назад", "🧹 Очистить чат"],
+]
+
+MAIN_KEYBOARD = ReplyKeyboardMarkup(MAIN_KEYBOARD_ROWS, resize_keyboard=True)
+ADMIN_MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [*MAIN_KEYBOARD_ROWS, ["📊 Админ"]],
     resize_keyboard=True,
 )
 
@@ -436,6 +438,10 @@ def is_admin(update: Update):
     return bool(user and user.get("role") == "admin")
 
 
+def main_keyboard(update: Update):
+    return ADMIN_MAIN_KEYBOARD if is_admin(update) else MAIN_KEYBOARD
+
+
 def remaining_contracts(update: Update):
     if is_admin(update):
         return None
@@ -612,7 +618,7 @@ async def send_clean_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     message = await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=text,
-        reply_markup=MAIN_KEYBOARD,
+        reply_markup=main_keyboard(update),
     )
     session = get_session(update)
     if session:
@@ -689,6 +695,24 @@ def clean_extracted_data(data):
         vehicle["pts_issue_date"] = normalize_date(vehicle.get("pts_issue_date", ""))
         vehicle["sts_issue_date"] = normalize_date(vehicle.get("sts_issue_date", ""))
     return data
+
+
+def extract_sts_number_from_text(text):
+    normalized = re.sub(r"[^\dA-Za-zА-Яа-я]+", " ", text)
+    patterns = [
+        r"(?:свидетельств\w*|регистрационн\w*|стс)\D{0,80}(\d{2})\D{0,4}(\d{2})\D{0,8}(\d{6})",
+        r"(\d{2})\D{0,4}(\d{2})\D{0,8}(\d{6})",
+        r"(\d{4})\D{0,8}(\d{6})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized, re.IGNORECASE)
+        if not match:
+            continue
+        groups = match.groups()
+        if len(groups) == 3:
+            return f"{groups[0]} {groups[1]} {groups[2]}"
+        return f"{groups[0][:2]} {groups[0][2:]} {groups[1]}"
+    return ""
 
 
 def get_value(deal, field_path):
@@ -1022,7 +1046,7 @@ def mistral_ocr_text(photo_path):
     return text
 
 
-def yandex_extract_data(prompt, recognized_text):
+def yandex_extract_data(prompt, recognized_text, stage):
     if not YANDEX_API_KEY:
         raise RuntimeError("Добавь YANDEX_API_KEY в файл .env")
     if not YANDEX_FOLDER_ID:
@@ -1052,7 +1076,11 @@ def yandex_extract_data(prompt, recognized_text):
     )
     content = result["choices"][0]["message"]["content"]
     logger.info("Yandex GPT returned %s characters", len(content))
-    return clean_extracted_data(extract_json(content))
+    data = clean_extracted_data(extract_json(content))
+    vehicle = data.setdefault("vehicle", {})
+    if stage.startswith("vehicle_sts") and not vehicle.get("sts"):
+        vehicle["sts"] = extract_sts_number_from_text(recognized_text)
+    return data
 
 
 def recognize_document(photo_path, stage):
@@ -1060,10 +1088,22 @@ def recognize_document(photo_path, stage):
         raise RuntimeError("Добавь OPENAI_API_KEY в файл .env")
 
     section = STAGE_TO_SECTION[stage]
+    stage_hint = ""
+    if stage.startswith("vehicle_sts"):
+        stage_hint = """
+Особое правило для СТС:
+- Перед ответом внимательно проверь нижнюю треть документа и самую нижнюю строку.
+- Серия и номер СТС часто напечатаны внизу документа отдельной строкой без явной подписи.
+- Ищи 10 цифр в формате "12 34 567890" или "1234 567890"; это номер СТС, запиши его в sts.
+- Даже если остальные поля уже найдены, не оставляй sts пустым, пока не проверишь низ фото.
+""".strip()
+
     prompt = f"""
 Ты внимательно переписываешь данные с фото документа для черновика договора купли-продажи автомобиля.
 Верни только JSON без пояснений.
 Документ: {stage}. Заполняй только раздел {section}.
+
+{stage_hint}
 
 Правила:
 - Не придумывай данные и не восстанавливай их по памяти.
@@ -1090,7 +1130,8 @@ def recognize_document(photo_path, stage):
 - Если это СТС, переписывай только данные, которые реально видны на отправленной стороне СТС.
 - Для СТС первая сторона обычно содержит марку/модель, VIN, год, цвет и госномер.
 - Для СТС вторая сторона обычно содержит серию и номер свидетельства о регистрации ТС. Это поле записывай в sts.
-- Номер СТС может быть подписан как "Свидетельство о регистрации ТС", "Регистрационный документ", "серия", "номер" или быть напечатан отдельной крупной строкой.
+- Номер СТС часто расположен в самом низу документа. Проверь нижний край фото отдельно.
+- Номер СТС может быть подписан как "Свидетельство о регистрации ТС", "Регистрационный документ", "серия", "номер" или быть напечатан отдельной крупной строкой без подписи.
 - Если видишь серию и номер СТС, объедини их в одну строку, например "99 99 123456" или "9999 123456", и запиши в sts.
 - Не путай номер СТС с госномером, VIN, ПТС, номером кузова, номером двигателя или кодом подразделения.
 - Если это вторая сторона СТС и номер СТС виден четко, поле sts обязательно должно быть заполнено.
@@ -1128,10 +1169,10 @@ def recognize_document(photo_path, stage):
 
     if AI_PROVIDER == "yandex":
         recognized_text = yandex_ocr_text(photo_path)
-        return yandex_extract_data(prompt, recognized_text)
+        return yandex_extract_data(prompt, recognized_text, stage)
     if AI_PROVIDER == "mistral":
         recognized_text = mistral_ocr_text(photo_path)
-        return yandex_extract_data(prompt, recognized_text)
+        return yandex_extract_data(prompt, recognized_text, stage)
     if AI_PROVIDER != "openai":
         raise RuntimeError("AI_PROVIDER должен быть openai, yandex или mistral")
 
@@ -1338,7 +1379,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         "Я помогу собрать договор купли-продажи авто.",
-        reply_markup=MAIN_KEYBOARD,
+        reply_markup=main_keyboard(update),
     )
 
 
@@ -1355,7 +1396,7 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "Регистрация готова. Ты админ бота.\n\n" + TEST_MODE_NOTICE
     else:
         text = "Регистрация готова. Можно создавать договор.\n\n" + TEST_MODE_NOTICE
-    await update.message.reply_text(text, reply_markup=MAIN_KEYBOARD)
+    await update.message.reply_text(text, reply_markup=main_keyboard(update))
 
 
 async def new_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1378,7 +1419,7 @@ async def new_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update,
         context,
         "Напиши город договора.\nНапример: Москва",
-        reply_markup=MAIN_KEYBOARD,
+        reply_markup=main_keyboard(update),
     )
 
 
@@ -1387,7 +1428,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     data.pop(chat_id(update), None)
     save_data(data)
-    await update.message.reply_text("Текущий договор отменен.", reply_markup=MAIN_KEYBOARD)
+    await update.message.reply_text("Текущий договор отменен.", reply_markup=main_keyboard(update))
 
 
 async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1406,12 +1447,12 @@ async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session["message_ids"] = []
     session["last_prompt_message_id"] = None
     save_session(update, session)
-    await send_tracked_message(update, context, "Чат очищен.", reply_markup=MAIN_KEYBOARD)
+    await send_tracked_message(update, context, "Чат очищен.", reply_markup=main_keyboard(update))
 
 
 async def admin_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
-        await send_tracked_message(update, context, "У тебя нет доступа к админ-отчету.", reply_markup=MAIN_KEYBOARD)
+        await send_tracked_message(update, context, "У тебя нет доступа к админ-отчету.", reply_markup=main_keyboard(update))
         return
 
     users = load_users()
@@ -1444,7 +1485,7 @@ async def admin_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"договоров: {user.get('contracts_created', 0)}"
         )
 
-    await send_tracked_message(update, context, "\n".join(lines), reply_markup=MAIN_KEYBOARD)
+    await send_tracked_message(update, context, "\n".join(lines), reply_markup=main_keyboard(update))
 
 
 async def step_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1452,18 +1493,18 @@ async def step_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await delete_last_prompt(update, context)
     session = get_session(update)
     if not session:
-        await send_tracked_message(update, context, "Сначала нажми «Новый договор».", reply_markup=MAIN_KEYBOARD)
+        await send_tracked_message(update, context, "Сначала нажми «Новый договор».", reply_markup=main_keyboard(update))
         return
 
     mode = session.get("mode")
     if mode == "city":
-        await send_tracked_message(update, context, "Ты уже в начале. Напиши город договора.", reply_markup=MAIN_KEYBOARD)
+        await send_tracked_message(update, context, "Ты уже в начале. Напиши город договора.", reply_markup=main_keyboard(update))
         return
 
     if mode == "date":
         session["mode"] = "city"
         save_session(update, session)
-        await send_tracked_message(update, context, "Напиши город договора.\nНапример: Москва", reply_markup=MAIN_KEYBOARD)
+        await send_tracked_message(update, context, "Напиши город договора.\nНапример: Москва", reply_markup=main_keyboard(update))
         return
 
     if mode == "photos":
@@ -1494,12 +1535,12 @@ async def draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await delete_incoming_message(update, context)
     session = get_session(update)
     if not session:
-        await update.message.reply_text("Сначала нажми «Новый договор».", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("Сначала нажми «Новый договор».", reply_markup=main_keyboard(update))
         return
     text = format_deal(session["deal"])
     if session.get("pending", 0):
         text += "\n\nНекоторые фото еще обрабатываются. Проверь еще раз через минуту."
-    await send_tracked_message(update, context, text[:3900], reply_markup=MAIN_KEYBOARD)
+    await send_tracked_message(update, context, text[:3900], reply_markup=main_keyboard(update))
     await send_tracked_message(update, context, "Исправить по разделам:", reply_markup=build_edit_keyboard())
     await send_tracked_message(update, context, "Или выбери конкретное поле:", reply_markup=build_all_fields_keyboard())
 
@@ -1508,32 +1549,32 @@ async def set_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await delete_incoming_message(update, context)
     session = get_session(update)
     if not session:
-        await update.message.reply_text("Сначала нажми «Новый договор».", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("Сначала нажми «Новый договор».", reply_markup=main_keyboard(update))
         return
     if len(context.args) < 2:
         session["mode"] = "edit"
         save_session(update, session)
         await update.message.reply_text(
             "Напиши, что исправить.\nНапример: Покупатель - Анатолий\nМожно несколько строк сразу.",
-            reply_markup=MAIN_KEYBOARD,
+            reply_markup=main_keyboard(update),
         )
         return
 
     field = context.args[0]
     value = " ".join(context.args[1:])
     if not set_value(session["deal"], field, value):
-        await update.message.reply_text("Не понял поле. Нажми «Исправить поле» и напиши по-русски.", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("Не понял поле. Нажми «Исправить поле» и напиши по-русски.", reply_markup=main_keyboard(update))
         return
 
     save_session(update, session)
-    await update.message.reply_text("Записал.", reply_markup=MAIN_KEYBOARD)
+    await update.message.reply_text("Записал.", reply_markup=main_keyboard(update))
 
 
 async def skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await delete_incoming_message(update, context)
     session = get_session(update)
     if not session:
-        await update.message.reply_text("Сначала нажми «Новый договор».", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("Сначала нажми «Новый договор».", reply_markup=main_keyboard(update))
         return
     session["stage_index"] += 1
     if session["stage_index"] >= len(STAGES):
@@ -1546,14 +1587,14 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await delete_incoming_message(update, context)
     session = get_session(update)
     if not session:
-        await update.message.reply_text("Сначала нажми «Новый договор».", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("Сначала нажми «Новый договор».", reply_markup=main_keyboard(update))
         return
 
     remaining = remaining_contracts(update)
     if remaining == 0:
         await update.message.reply_text(
             "Лимит тестовых генераций закончился. В тестовом режиме доступно только 2 договора.",
-            reply_markup=MAIN_KEYBOARD,
+            reply_markup=main_keyboard(update),
         )
         return
 
@@ -1565,7 +1606,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if missing:
         lines = ["Не хватает данных. Нажми «Исправить поле» и допиши:"]
         lines.extend(FIELD_LABELS[field] for field in missing)
-        await update.message.reply_text("\n".join(lines), reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("\n".join(lines), reply_markup=main_keyboard(update))
         return
 
     if PAYMENTS_ENABLED:
@@ -1578,7 +1619,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = get_session(update)
     if not session:
-        await send_tracked_message(update, context, "Сначала нажми «📝 Новый договор».", reply_markup=MAIN_KEYBOARD)
+        await send_tracked_message(update, context, "Сначала нажми «📝 Новый договор».", reply_markup=main_keyboard(update))
         return
 
     remaining = remaining_contracts(update)
@@ -1587,7 +1628,7 @@ async def send_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update,
             context,
             "Лимит тестовых генераций закончился. В тестовом режиме доступно только 2 договора.",
-            reply_markup=MAIN_KEYBOARD,
+            reply_markup=main_keyboard(update),
         )
         return
 
@@ -1604,7 +1645,7 @@ async def send_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def request_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = get_session(update)
     if not session:
-        await send_tracked_message(update, context, "Сначала нажми «📝 Новый договор».", reply_markup=MAIN_KEYBOARD)
+        await send_tracked_message(update, context, "Сначала нажми «📝 Новый договор».", reply_markup=main_keyboard(update))
         return
 
     if session.get("payment", {}).get("status") == "succeeded":
@@ -1616,7 +1657,7 @@ async def request_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update,
             context,
             "Оплата ЮKassa еще не настроена. Добавь YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY в .env.",
-            reply_markup=MAIN_KEYBOARD,
+            reply_markup=main_keyboard(update),
         )
         return
 
@@ -1625,7 +1666,7 @@ async def request_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             created = create_yookassa_payment(update)
         except Exception as error:
-            await send_tracked_message(update, context, f"Не получилось создать платеж: {error}", reply_markup=MAIN_KEYBOARD)
+            await send_tracked_message(update, context, f"Не получилось создать платеж: {error}", reply_markup=main_keyboard(update))
             return
 
         confirmation_url = created.get("confirmation", {}).get("confirmation_url")
@@ -1652,22 +1693,22 @@ async def request_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = get_session(update)
     if not session:
-        await send_tracked_message(update, context, "Сначала нажми «📝 Новый договор».", reply_markup=MAIN_KEYBOARD)
+        await send_tracked_message(update, context, "Сначала нажми «📝 Новый договор».", reply_markup=main_keyboard(update))
         return
 
     payment = session.get("payment")
     if not payment or not payment.get("id"):
-        await send_tracked_message(update, context, "Платеж еще не создан. Нажми «📄 Создать договор».", reply_markup=MAIN_KEYBOARD)
+        await send_tracked_message(update, context, "Платеж еще не создан. Нажми «📄 Создать договор».", reply_markup=main_keyboard(update))
         return
 
     if not payment_credentials_ready():
-        await send_tracked_message(update, context, "Оплата ЮKassa еще не настроена в .env.", reply_markup=MAIN_KEYBOARD)
+        await send_tracked_message(update, context, "Оплата ЮKassa еще не настроена в .env.", reply_markup=main_keyboard(update))
         return
 
     try:
         actual = get_yookassa_payment(payment["id"])
     except Exception as error:
-        await send_tracked_message(update, context, f"Не получилось проверить оплату: {error}", reply_markup=MAIN_KEYBOARD)
+        await send_tracked_message(update, context, f"Не получилось проверить оплату: {error}", reply_markup=main_keyboard(update))
         return
 
     status = actual.get("status")
@@ -1680,7 +1721,7 @@ async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_contract(update, context)
         return
 
-    await send_tracked_message(update, context, f"Оплата пока не прошла. Статус: {status}", reply_markup=MAIN_KEYBOARD)
+    await send_tracked_message(update, context, f"Оплата пока не прошла. Статус: {status}", reply_markup=main_keyboard(update))
 
 
 async def send_next_step(update: Update, session, context=None):
@@ -1689,16 +1730,16 @@ async def send_next_step(update: Update, session, context=None):
         if context:
             await send_clean_prompt(update, context, STAGES[index][1])
         else:
-            await update.message.reply_text(STAGES[index][1], reply_markup=MAIN_KEYBOARD)
+            await update.message.reply_text(STAGES[index][1], reply_markup=main_keyboard(update))
         return
     text = "Теперь напиши цену автомобиля.\nНапример: Цена - 850000"
     if context:
         await send_clean_prompt(update, context, text)
     else:
-        await update.message.reply_text(text, reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text(text, reply_markup=main_keyboard(update))
 
 
-async def recognize_photo_background(bot, chat, deal_id, file_id, photo_path, stage):
+async def recognize_photo_background(bot, chat, deal_id, file_id, photo_path, stage, reply_keyboard):
     data = load_data()
     session = data.get(chat)
     if not session or session.get("deal_id") != deal_id:
@@ -1716,7 +1757,7 @@ async def recognize_photo_background(bot, chat, deal_id, file_id, photo_path, st
         await bot.send_message(
             chat_id=chat,
             text="Одно фото не получилось прочитать. Потом можно дописать данные через «Исправить поле».",
-            reply_markup=MAIN_KEYBOARD,
+            reply_markup=reply_keyboard,
         )
         extracted = {}
     finally:
@@ -1740,12 +1781,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     remember_incoming_message(update)
     session = get_session(update)
     if not session:
-        await update.message.reply_text("Сначала нажми «Новый договор».", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("Сначала нажми «Новый договор».", reply_markup=main_keyboard(update))
         return
 
     index = session["stage_index"]
     if index >= len(STAGES):
-        await update.message.reply_text("Все фото уже собраны. Нажми «Проверить данные».", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("Все фото уже собраны. Нажми «Проверить данные».", reply_markup=main_keyboard(update))
         return
 
     stage, _ = STAGES[index]
@@ -1756,7 +1797,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_id = update.message.document.file_id
         suffix = Path(update.message.document.file_name or "").suffix or ".jpg"
     else:
-        await update.message.reply_text("Пришли фото или файл-картинку: JPEG, PNG или WEBP.", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("Пришли фото или файл-картинку: JPEG, PNG или WEBP.", reply_markup=main_keyboard(update))
         return
 
     message_id = update.message.message_id
@@ -1770,7 +1811,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     photo_path = PHOTO_DIR / f"{chat_id(update)}_{stage}_{update.message.message_id}{suffix}"
     context.application.create_task(
-        recognize_photo_background(context.bot, chat_id(update), session["deal_id"], file_id, photo_path, stage)
+        recognize_photo_background(
+            context.bot,
+            chat_id(update),
+            session["deal_id"],
+            file_id,
+            photo_path,
+            stage,
+            main_keyboard(update),
+        )
     )
     await send_next_step(update, session, context)
 
@@ -1809,12 +1858,12 @@ async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tip_message = await context.bot.send_message(
             chat_id=query.message.chat_id,
             text=PHOTO_TIP,
-            reply_markup=MAIN_KEYBOARD,
+            reply_markup=main_keyboard(update),
         )
         message = await context.bot.send_message(
             chat_id=query.message.chat_id,
             text=STAGES[session["stage_index"]][1],
-            reply_markup=MAIN_KEYBOARD,
+            reply_markup=main_keyboard(update),
         )
         session["last_prompt_message_id"] = message.message_id
         message_ids = session.setdefault("message_ids", [])
@@ -1832,15 +1881,15 @@ async def handle_edit_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
     group_key = query.data.split(":", 1)[1]
     session = get_session(update)
     if not session:
-        await query.message.reply_text("Сначала нажми «Новый договор».", reply_markup=MAIN_KEYBOARD)
+        await query.message.reply_text("Сначала нажми «Новый договор».", reply_markup=main_keyboard(update))
         return
     if group_key not in EDIT_GROUPS:
-        await query.message.reply_text("Не понял, что исправить.", reply_markup=MAIN_KEYBOARD)
+        await query.message.reply_text("Не понял, что исправить.", reply_markup=main_keyboard(update))
         return
 
     session["mode"] = "edit"
     save_session(update, session)
-    await send_tracked_message(update, context, format_edit_group(session["deal"], group_key), reply_markup=MAIN_KEYBOARD)
+    await send_tracked_message(update, context, format_edit_group(session["deal"], group_key), reply_markup=main_keyboard(update))
 
 
 async def handle_field_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1850,15 +1899,15 @@ async def handle_field_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     field = query.data.split(":", 1)[1]
     session = get_session(update)
     if not session:
-        await query.message.reply_text("Сначала нажми «Новый договор».", reply_markup=MAIN_KEYBOARD)
+        await query.message.reply_text("Сначала нажми «Новый договор».", reply_markup=main_keyboard(update))
         return
     if field not in FIELD_LABELS:
-        await query.message.reply_text("Не понял поле.", reply_markup=MAIN_KEYBOARD)
+        await query.message.reply_text("Не понял поле.", reply_markup=main_keyboard(update))
         return
 
     session["mode"] = "edit"
     save_session(update, session)
-    await send_tracked_message(update, context, "Исправь строку ниже и отправь обратно:", reply_markup=MAIN_KEYBOARD)
+    await send_tracked_message(update, context, "Исправь строку ниже и отправь обратно:", reply_markup=main_keyboard(update))
     await send_tracked_message(update, context, format_edit_field(session["deal"], field))
 
 
@@ -1899,7 +1948,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if lowered == "исправить поле":
         session = get_session(update)
         if not session:
-            await update.message.reply_text("Сначала нажми «Новый договор».", reply_markup=MAIN_KEYBOARD)
+            await update.message.reply_text("Сначала нажми «Новый договор».", reply_markup=main_keyboard(update))
             return
         session["mode"] = "edit"
         save_session(update, session)
@@ -1909,7 +1958,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Покупатель - Анатолий\n"
             "Паспорт покупателя - 4512 345678\n"
             "Цена - 850000",
-            reply_markup=MAIN_KEYBOARD,
+            reply_markup=main_keyboard(update),
         )
         return
 
@@ -1918,7 +1967,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not get_user(update):
             await update.message.reply_text(require_registration_text(), reply_markup=PHONE_KEYBOARD)
         else:
-            await update.message.reply_text("Нажми «Новый договор».", reply_markup=MAIN_KEYBOARD)
+            await update.message.reply_text("Нажми «Новый договор».", reply_markup=main_keyboard(update))
         return
 
     mode = session.get("mode")
@@ -1938,7 +1987,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["deal"]["deal"]["date"] = date
         session["mode"] = "photos"
         save_session(update, session)
-        await update.message.reply_text(PHOTO_TIP, reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text(PHOTO_TIP, reply_markup=main_keyboard(update))
         await send_next_step(update, session, context)
         return
 
@@ -1946,14 +1995,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["deal"]["deal"]["price"] = text
         session["mode"] = "mileage"
         save_session(update, session)
-        await update.message.reply_text("Записал цену. Теперь напиши пробег.\nНапример: Пробег - 125000", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("Записал цену. Теперь напиши пробег.\nНапример: Пробег - 125000", reply_markup=main_keyboard(update))
         return
 
     if mode == "mileage" and not parse_corrections(text):
         session["deal"]["vehicle"]["mileage"] = text
         session["mode"] = "edit"
         save_session(update, session)
-        await update.message.reply_text("Записал пробег. Теперь нажми «Проверить данные».", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("Записал пробег. Теперь нажми «Проверить данные».", reply_markup=main_keyboard(update))
         return
 
     corrections = parse_corrections(text)
@@ -1962,10 +2011,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             set_value(session["deal"], field, value)
         session["mode"] = "edit"
         save_session(update, session)
-        await update.message.reply_text("Записал. Нажми «Проверить данные».", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("Записал. Нажми «Проверить данные».", reply_markup=main_keyboard(update))
         return
 
-    await update.message.reply_text("Не понял. Можно нажать кнопку ниже.", reply_markup=MAIN_KEYBOARD)
+    await update.message.reply_text("Не понял. Можно нажать кнопку ниже.", reply_markup=main_keyboard(update))
 
 
 def main():
