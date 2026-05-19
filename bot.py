@@ -1370,6 +1370,19 @@ def apply_fill_style(run, size=10, bold=False, underline=False):
     run.font.size = Pt(size)
 
 
+def apply_party_style(paragraph):
+    if not paragraph.runs:
+        return
+    name_end = paragraph.runs[0].text.find(",")
+    if name_end > 0:
+        name = paragraph.runs[0].text[: name_end + 1]
+        rest = paragraph.runs[0].text[name_end + 1 :]
+        paragraph.runs[0].text = name
+        apply_fill_style(paragraph.runs[0], bold=True)
+        rest_run = paragraph.add_run(rest)
+        apply_fill_style(rest_run)
+
+
 def set_paragraph_text(paragraph, value):
     if not value:
         return
@@ -1383,12 +1396,14 @@ def set_paragraph_text(paragraph, value):
     apply_fill_style(paragraph.runs[0])
 
 
-def set_run_text(paragraph, run_index, value, size=10, bold=False, underline=False):
+def set_run_text(paragraph, run_index, value, size=10, bold=False, underline=None):
     if not value:
         return
     while len(paragraph.runs) <= run_index:
         paragraph.add_run("")
     paragraph.runs[run_index].text = str(value)
+    if underline is None:
+        underline = paragraph.runs[run_index].underline
     apply_fill_style(paragraph.runs[run_index], size=size, bold=bold, underline=underline)
 
 
@@ -1408,39 +1423,29 @@ def fill_autoru_template_document(document, deal):
     paragraphs = document.paragraphs
 
     set_paragraph_text(paragraphs[1], party_summary(buyer))
+    apply_party_style(paragraphs[1])
     set_paragraph_text(paragraphs[7], party_summary(seller))
+    apply_party_style(paragraphs[7])
     set_paragraph_text(paragraphs[16], vehicle.get("make_model", ""))
 
-    set_paragraph_text(
-        paragraphs[18],
-        "\t".join([vehicle.get("vin", ""), vehicle.get("vehicle_type", ""), vehicle.get("year", "")]),
-    )
-    set_paragraph_text(
-        paragraphs[20],
-        "\t".join(
-            [
-                vehicle.get("mileage", ""),
-                vehicle.get("engine_power", ""),
-                vehicle.get("engine_volume", ""),
-                vehicle.get("color", ""),
-            ]
-        ),
-    )
-    set_paragraph_text(
-        paragraphs[22],
-        "\t".join(["", vehicle.get("engine_number", ""), vehicle.get("chassis_number", ""), vehicle.get("body_number", "")]),
-    )
-    set_paragraph_text(
-        paragraphs[24],
-        "\t".join(
-            [
-                vehicle.get("pts", ""),
-                vehicle.get("pts_issued_by", ""),
-                vehicle.get("pts_issue_date", ""),
-                vehicle.get("license_plate", ""),
-            ]
-        ),
-    )
+    set_run_text(paragraphs[18], 0, vehicle.get("vin", ""))
+    set_run_text(paragraphs[18], 1, "\t" + vehicle.get("vehicle_type", ""))
+    set_run_text(paragraphs[18], 2, "\t" + vehicle.get("year", ""))
+
+    set_run_text(paragraphs[20], 1, vehicle.get("mileage", ""))
+    set_run_text(paragraphs[20], 3, vehicle.get("engine_power", ""))
+    set_run_text(paragraphs[20], 5, vehicle.get("engine_volume", ""))
+    set_run_text(paragraphs[20], 6, "\t" + vehicle.get("color", ""))
+
+    set_run_text(paragraphs[22], 0, vehicle.get("engine_number", ""))
+    set_run_text(paragraphs[22], 2, vehicle.get("engine_number", ""))
+    set_run_text(paragraphs[22], 4, vehicle.get("chassis_number", ""))
+    set_run_text(paragraphs[22], 6, vehicle.get("body_number", ""))
+
+    set_run_text(paragraphs[24], 0, vehicle.get("pts", ""))
+    set_run_text(paragraphs[24], 1, "\t" + vehicle.get("pts_issued_by", ""))
+    set_run_text(paragraphs[24], 2, "\t" + vehicle.get("pts_issue_date", ""))
+    set_run_text(paragraphs[24], 3, "\t" + vehicle.get("license_plate", ""))
 
     sts_series, sts_number = split_sts_number(vehicle.get("sts", ""))
     sts_day, sts_month, sts_year = split_date(vehicle.get("sts_issue_date", ""))
