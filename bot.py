@@ -5,6 +5,8 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
+import subprocess
 import urllib.error
 import urllib.request
 import uuid
@@ -1731,6 +1733,52 @@ def create_contract(deal, chat):
     return filename
 
 
+def render_contract_images(docx_path):
+    converter = shutil.which("soffice") or shutil.which("libreoffice")
+    if not converter:
+        logger.warning("LibreOffice is not installed, contract preview image was skipped")
+        return []
+
+    try:
+        subprocess.run(
+            [
+                converter,
+                "--headless",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                str(docx_path.parent),
+                str(docx_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+
+        pdf_path = docx_path.with_suffix(".pdf")
+        if not pdf_path.exists():
+            logger.warning("LibreOffice did not create PDF preview for %s", docx_path)
+            return []
+
+        import fitz
+
+        image_paths = []
+        pdf_document = fitz.open(pdf_path)
+        zoom = fitz.Matrix(2, 2)
+        for page_index in range(pdf_document.page_count):
+            page = pdf_document.load_page(page_index)
+            pixmap = page.get_pixmap(matrix=zoom, alpha=False)
+            image_path = docx_path.with_name(f"{docx_path.stem}_page_{page_index + 1}.png")
+            pixmap.save(image_path)
+            image_paths.append(image_path)
+        pdf_document.close()
+        return image_paths
+    except Exception:
+        logger.exception("Failed to render contract preview image")
+        return []
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await delete_incoming_message(update, context)
     if not get_user(update):
@@ -1991,13 +2039,21 @@ async def send_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     path = create_contract(session["deal"], chat_id(update))
-    document_message = await update.effective_message.reply_document(document=path.open("rb"), filename=path.name)
+    with path.open("rb") as contract_file:
+        document_message = await update.effective_message.reply_document(document=contract_file, filename=path.name)
+    image_messages = []
+    for image_path in render_contract_images(path):
+        with image_path.open("rb") as image_file:
+            image_message = await update.effective_message.reply_photo(photo=image_file)
+            image_messages.append(image_message)
     increment_user_stat(update, "contracts_created")
     await delete_tracked_messages(update, context)
     menu_message = await update.effective_message.reply_text("Договор готов. Можно начать новый договор.", reply_markup=main_keyboard(update))
     session = get_session(update)
     if session:
-        session["message_ids"] = [document_message.message_id, menu_message.message_id]
+        session["message_ids"] = [document_message.message_id]
+        session["message_ids"].extend(message.message_id for message in image_messages)
+        session["message_ids"].append(menu_message.message_id)
         save_session(update, session)
 
 
