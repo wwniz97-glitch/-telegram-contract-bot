@@ -1345,6 +1345,134 @@ def build_template_replacements(deal):
     return replacements
 
 
+def compact_join(parts):
+    return ", ".join(str(part).strip() for part in parts if str(part or "").strip())
+
+
+def party_summary(person):
+    passport = compact_join(
+        [
+            f"паспорт {person.get('passport_series_number', '')}" if person.get("passport_series_number") else "",
+            f"выдан {person.get('passport_issued_by', '')}" if person.get("passport_issued_by") else "",
+            person.get("passport_issue_date", ""),
+        ]
+    )
+    return compact_join(
+        [
+            person.get("full_name", ""),
+            f"{person.get('birth_date', '')} г.р." if person.get("birth_date") else "",
+            person.get("registration_address", ""),
+            passport,
+        ]
+    )
+
+
+def split_sts_number(value):
+    digits = re.sub(r"\D+", "", value or "")
+    if len(digits) >= 10:
+        return f"{digits[:2]} {digits[2:4]}", digits[4:10]
+    parts = str(value or "").split()
+    if len(parts) >= 2:
+        return " ".join(parts[:-1]), parts[-1]
+    return value or "", ""
+
+
+def split_date(value):
+    normalized = normalize_date(value)
+    if not normalized:
+        return "", "", ""
+    day, month, year = normalized.split(".")
+    return day, month, year
+
+
+def set_paragraph_text(paragraph, value):
+    if not value:
+        return
+    if not paragraph.runs:
+        paragraph.add_run(value)
+        return
+    for run in paragraph.runs:
+        run.text = ""
+    paragraph.runs[0].text = value
+
+
+def set_run_text(paragraph, run_index, value):
+    if not value:
+        return
+    while len(paragraph.runs) <= run_index:
+        paragraph.add_run("")
+    paragraph.runs[run_index].text = str(value)
+
+
+def is_autoru_template(document):
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    return "ФИО покупателя" in text and "Паспорт ТС, серия/номер" in text
+
+
+def fill_autoru_template_document(document, deal):
+    if not is_autoru_template(document) or len(document.paragraphs) < 50:
+        return
+
+    seller = deal["seller"]
+    buyer = deal["buyer"]
+    vehicle = deal["vehicle"]
+    deal_info = deal["deal"]
+    paragraphs = document.paragraphs
+
+    set_paragraph_text(paragraphs[1], party_summary(buyer))
+    set_paragraph_text(paragraphs[7], party_summary(seller))
+    set_paragraph_text(paragraphs[16], vehicle.get("make_model", ""))
+
+    set_paragraph_text(
+        paragraphs[18],
+        "\t".join([vehicle.get("vin", ""), vehicle.get("vehicle_type", ""), vehicle.get("year", "")]),
+    )
+    set_paragraph_text(
+        paragraphs[20],
+        "\t".join(
+            [
+                vehicle.get("mileage", ""),
+                vehicle.get("engine_power", ""),
+                vehicle.get("engine_volume", ""),
+                vehicle.get("color", ""),
+            ]
+        ),
+    )
+    set_paragraph_text(
+        paragraphs[22],
+        "\t".join(["", vehicle.get("engine_number", ""), vehicle.get("chassis_number", ""), vehicle.get("body_number", "")]),
+    )
+    set_paragraph_text(
+        paragraphs[24],
+        "\t".join(
+            [
+                vehicle.get("pts", ""),
+                vehicle.get("pts_issued_by", ""),
+                vehicle.get("pts_issue_date", ""),
+                vehicle.get("license_plate", ""),
+            ]
+        ),
+    )
+
+    sts_series, sts_number = split_sts_number(vehicle.get("sts", ""))
+    sts_day, sts_month, sts_year = split_date(vehicle.get("sts_issue_date", ""))
+    set_run_text(paragraphs[27], 2, sts_series)
+    set_run_text(paragraphs[27], 5, sts_number)
+    set_run_text(paragraphs[27], 8, vehicle.get("sts_issued_by", ""))
+    set_run_text(paragraphs[27], 10, sts_day)
+    set_run_text(paragraphs[27], 13, sts_month)
+    set_run_text(paragraphs[27], 15, sts_year)
+
+    deal_info["price_words"] = price_to_words(deal_info.get("price", ""))
+    set_run_text(paragraphs[31], 2, deal_info.get("price", ""))
+    set_run_text(paragraphs[31], 5, deal_info.get("price_words", ""))
+    set_run_text(paragraphs[45], 2, deal_info.get("price", ""))
+
+    set_run_text(paragraphs[42], 2, seller.get("full_name", ""))
+    set_run_text(paragraphs[46], 2, seller.get("full_name", ""))
+    set_run_text(paragraphs[49], 2, buyer.get("full_name", ""))
+
+
 def replace_in_paragraph(paragraph, replacements):
     original = "".join(run.text for run in paragraph.runs)
     replaced = original
@@ -1385,6 +1513,7 @@ def create_contract(deal, chat):
     if TEMPLATE_FILE.exists():
         document = Document(TEMPLATE_FILE)
         fill_template_document(document, build_template_replacements(deal))
+        fill_autoru_template_document(document, deal)
         document.save(filename)
         return filename
 
