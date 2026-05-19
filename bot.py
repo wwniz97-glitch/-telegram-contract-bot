@@ -1364,7 +1364,7 @@ def split_date(value):
     return day, month, year
 
 
-def apply_fill_style(run, size=10, bold=False, underline=False):
+def apply_fill_style(run, size=8, bold=False, underline=False):
     run.bold = bold
     run.underline = underline
     run.font.size = Pt(size)
@@ -1396,7 +1396,7 @@ def set_paragraph_text(paragraph, value):
     apply_fill_style(paragraph.runs[0])
 
 
-def set_run_text(paragraph, run_index, value, size=10, bold=False, underline=None):
+def set_run_text(paragraph, run_index, value, size=8, bold=False, underline=None):
     if not value:
         return
     while len(paragraph.runs) <= run_index:
@@ -1405,6 +1405,11 @@ def set_run_text(paragraph, run_index, value, size=10, bold=False, underline=Non
     if underline is None:
         underline = paragraph.runs[run_index].underline
     apply_fill_style(paragraph.runs[run_index], size=size, bold=bold, underline=underline)
+
+
+def clear_run_text(paragraph, run_index, value=""):
+    if len(paragraph.runs) > run_index:
+        paragraph.runs[run_index].text = value
 
 
 def is_autoru_template(document):
@@ -1432,12 +1437,15 @@ def fill_autoru_template_document(document, deal):
     set_run_text(paragraphs[18], 1, "\t" + vehicle.get("vehicle_type", ""))
     set_run_text(paragraphs[18], 2, "\t" + vehicle.get("year", ""))
 
-    set_run_text(paragraphs[20], 1, vehicle.get("mileage", ""))
-    set_run_text(paragraphs[20], 3, vehicle.get("engine_power", ""))
-    set_run_text(paragraphs[20], 5, vehicle.get("engine_volume", ""))
-    set_run_text(paragraphs[20], 6, "\t" + vehicle.get("color", ""))
+    set_run_text(
+        paragraphs[20],
+        1,
+        f"{vehicle.get('mileage', '')}\t{vehicle.get('engine_power', '')}\t",
+    )
+    set_run_text(paragraphs[20], 3, vehicle.get("engine_volume", ""))
+    set_run_text(paragraphs[20], 5, vehicle.get("color", ""))
 
-    set_run_text(paragraphs[22], 0, vehicle.get("engine_number", ""))
+    set_run_text(paragraphs[22], 0, f"{vehicle.get('engine_number', '')}\t")
     set_run_text(paragraphs[22], 2, vehicle.get("engine_number", ""))
     set_run_text(paragraphs[22], 4, vehicle.get("chassis_number", ""))
     set_run_text(paragraphs[22], 6, vehicle.get("body_number", ""))
@@ -1461,9 +1469,12 @@ def fill_autoru_template_document(document, deal):
     set_run_text(paragraphs[31], 5, deal_info.get("price_words", ""))
     set_run_text(paragraphs[45], 2, deal_info.get("price", ""))
 
-    set_run_text(paragraphs[42], 2, seller.get("full_name", ""))
-    set_run_text(paragraphs[46], 2, seller.get("full_name", ""))
-    set_run_text(paragraphs[49], 2, buyer.get("full_name", ""))
+    set_run_text(paragraphs[42], 0, f"{seller.get('full_name', '')}\t")
+    clear_run_text(paragraphs[42], 2)
+    set_run_text(paragraphs[46], 0, f"{seller.get('full_name', '')}\t")
+    clear_run_text(paragraphs[46], 2)
+    set_run_text(paragraphs[49], 0, f"{buyer.get('full_name', '')}\t")
+    clear_run_text(paragraphs[49], 2)
 
 
 def replace_in_paragraph(paragraph, replacements):
