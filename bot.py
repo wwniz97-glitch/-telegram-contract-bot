@@ -1277,6 +1277,43 @@ def set_cell_shading(cell, fill):
     shading.set(qn("w:fill"), fill)
 
 
+def set_table_fixed_widths(table, widths_cm):
+    table.autofit = False
+    table.allow_autofit = False
+    tbl_pr = table._tbl.tblPr
+    tbl_layout = tbl_pr.find(qn("w:tblLayout"))
+    if tbl_layout is None:
+        tbl_layout = OxmlElement("w:tblLayout")
+        tbl_pr.append(tbl_layout)
+    tbl_layout.set(qn("w:type"), "fixed")
+
+    for row in table.rows:
+        for cell, width in zip(row.cells, widths_cm):
+            cell.width = Cm(width)
+            tc_pr = cell._tc.get_or_add_tcPr()
+            tc_w = tc_pr.find(qn("w:tcW"))
+            if tc_w is None:
+                tc_w = OxmlElement("w:tcW")
+                tc_pr.append(tc_w)
+            tc_w.set(qn("w:type"), "dxa")
+            tc_w.set(qn("w:w"), str(int(width / 2.54 * 1440)))
+
+
+def set_cell_margins(cell, top=70, start=90, bottom=70, end=90):
+    tc_pr = cell._tc.get_or_add_tcPr()
+    tc_mar = tc_pr.find(qn("w:tcMar"))
+    if tc_mar is None:
+        tc_mar = OxmlElement("w:tcMar")
+        tc_pr.append(tc_mar)
+    for margin_name, value in (("top", top), ("start", start), ("bottom", bottom), ("end", end)):
+        node = tc_mar.find(qn(f"w:{margin_name}"))
+        if node is None:
+            node = OxmlElement(f"w:{margin_name}")
+            tc_mar.append(node)
+        node.set(qn("w:w"), str(value))
+        node.set(qn("w:type"), "dxa")
+
+
 def set_cell_text(cell, text="", size=8, bold=False, shade=None, align=None):
     cell.text = ""
     paragraph = cell.paragraphs[0]
@@ -1287,6 +1324,7 @@ def set_cell_text(cell, text="", size=8, bold=False, shade=None, align=None):
     run = paragraph.add_run(str(text or ""))
     set_run_font(run, size=size, bold=bold)
     cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    set_cell_margins(cell)
     if shade:
         set_cell_shading(cell, shade)
 
@@ -1298,7 +1336,7 @@ def add_section_heading(document, text):
 def add_label_value_table(document, rows):
     table = document.add_table(rows=len(rows), cols=4)
     table.style = "Table Grid"
-    table.autofit = True
+    set_table_fixed_widths(table, [3.2, 6.1, 3.2, 6.1])
     for row_index, row in enumerate(rows):
         cells = table.rows[row_index].cells
         for col_index, value in enumerate(row):
@@ -1311,36 +1349,61 @@ def add_label_value_table(document, rows):
 def add_full_width_table(document, rows):
     table = document.add_table(rows=len(rows), cols=2)
     table.style = "Table Grid"
-    table.autofit = True
+    set_table_fixed_widths(table, [2.7, 15.9])
     for row_index, (label, value) in enumerate(rows):
         cells = table.rows[row_index].cells
-        set_cell_text(cells[0], label, size=8, bold=True, shade="F2F2F2")
+        set_cell_text(cells[0], label, size=8, bold=True, shade="F2F2F2", align=WD_ALIGN_PARAGRAPH.CENTER)
         set_cell_text(cells[1], value, size=8)
     document.add_paragraph().paragraph_format.space_after = Pt(2)
     return table
 
 
+def add_contract_meta(document, city, date):
+    table = document.add_table(rows=1, cols=2)
+    set_table_fixed_widths(table, [9.3, 9.3])
+    city_text = str(city or "").strip()
+    if city_text:
+        city_text = city_text[:1].upper() + city_text[1:]
+    set_cell_text(table.rows[0].cells[0], f"г. {city_text}", size=11, bold=True, align=WD_ALIGN_PARAGRAPH.LEFT)
+    set_cell_text(table.rows[0].cells[1], date or "", size=11, bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
+    document.add_paragraph().paragraph_format.space_after = Pt(4)
+    return table
+
+
+def add_cell_paragraph(cell, text="", size=8, bold=False, align=None, space_after=3):
+    if len(cell.paragraphs) == 1 and not cell.paragraphs[0].text:
+        paragraph = cell.paragraphs[0]
+    else:
+        paragraph = cell.add_paragraph()
+    paragraph.paragraph_format.space_after = Pt(space_after)
+    paragraph.paragraph_format.line_spacing = 1.0
+    if align is not None:
+        paragraph.alignment = align
+    run = paragraph.add_run(text)
+    set_run_font(run, size=size, bold=bold)
+    return paragraph
+
+
+def fill_signature_cell(cell, title, person, price=None):
+    cell.text = ""
+    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+    set_cell_margins(cell, top=120, start=140, bottom=120, end=140)
+    set_cell_shading(cell, "F7F7F7")
+    add_cell_paragraph(cell, title, size=10, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=6)
+    add_cell_paragraph(cell, person.get("full_name", ""), size=8, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=8)
+    add_cell_paragraph(cell, "Подпись: ______________________________", size=8, space_after=4)
+    add_cell_paragraph(cell, f"Расшифровка: {person.get('full_name', '')}", size=8, space_after=8)
+    if price is not None:
+        add_cell_paragraph(cell, f"Денежные средства в сумме {price or ''} руб. получил.", size=8, space_after=4)
+        add_cell_paragraph(cell, "Подпись за получение денег: __________________", size=8, space_after=0)
+
+
 def add_signatures_table(document, seller, buyer, price):
-    table = document.add_table(rows=4, cols=3)
+    table = document.add_table(rows=1, cols=2)
     table.style = "Table Grid"
-    headers = ["Сторона", "Подпись", "Расшифровка"]
-    for index, header in enumerate(headers):
-        set_cell_text(table.rows[0].cells[index], header, size=8, bold=True, shade="F2F2F2", align=WD_ALIGN_PARAGRAPH.CENTER)
-
-    rows = [
-        ("Продавец", "", seller.get("full_name", "")),
-        ("Денежные средства получил", "", seller.get("full_name", "")),
-        ("Покупатель", "", buyer.get("full_name", "")),
-    ]
-    for row_index, row in enumerate(rows, start=1):
-        for col_index, value in enumerate(row):
-            text = "____________________" if col_index == 1 else value
-            set_cell_text(table.rows[row_index].cells[col_index], text, size=8, align=WD_ALIGN_PARAGRAPH.CENTER)
-
-    money_paragraph = document.add_paragraph()
-    money_paragraph.paragraph_format.space_after = Pt(4)
-    run = money_paragraph.add_run(f"Денежные средства в сумме {price or ''} руб. получил.")
-    set_run_font(run, size=8)
+    set_table_fixed_widths(table, [9.3, 9.3])
+    fill_signature_cell(table.rows[0].cells[0], "Продавец", seller, price=price)
+    fill_signature_cell(table.rows[0].cells[1], "Покупатель", buyer)
     return table
 
 
@@ -1353,6 +1416,8 @@ def create_structured_contract_document(deal):
 
     document = Document()
     section = document.sections[0]
+    section.page_width = Cm(21)
+    section.page_height = Cm(29.7)
     section.top_margin = Cm(1.2)
     section.bottom_margin = Cm(1.2)
     section.left_margin = Cm(1.2)
@@ -1371,13 +1436,7 @@ def create_structured_contract_document(deal):
         align=WD_ALIGN_PARAGRAPH.CENTER,
         space_after=6,
     )
-    add_contract_paragraph(
-        document,
-        f"г. {deal_info.get('city', '')}    {deal_info.get('date', '')}",
-        size=9,
-        align=WD_ALIGN_PARAGRAPH.CENTER,
-        space_after=8,
-    )
+    add_contract_meta(document, deal_info.get("city", ""), deal_info.get("date", ""))
 
     add_section_heading(document, "Стороны договора")
     add_full_width_table(
