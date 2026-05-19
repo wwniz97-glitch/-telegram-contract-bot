@@ -232,15 +232,6 @@ PHONE_KEYBOARD = ReplyKeyboardMarkup(
     resize_keyboard=True,
     one_time_keyboard=True,
 )
-NUMBER_KEYBOARD = ReplyKeyboardMarkup(
-    [
-        ["1", "2", "3"],
-        ["4", "5", "6"],
-        ["7", "8", "9"],
-        ["⌫", "0", "✅ Готово"],
-    ],
-    resize_keyboard=True,
-)
 
 MONTH_NAMES = [
     "",
@@ -913,19 +904,6 @@ async def ask_contract_date(update: Update):
     await update.message.reply_text(
         "Выбери дату договора:",
         reply_markup=build_calendar(today.year, today.month),
-    )
-
-
-async def ask_number_input(update: Update, context: ContextTypes.DEFAULT_TYPE, target):
-    session = get_session(update)
-    if session:
-        session["number_value"] = ""
-        save_session(update, session)
-    text = "Введи цену автомобиля:" if target == "price" else "Введи пробег:"
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=f"{text}\n\nТекущее значение: не заполнено",
-        reply_markup=NUMBER_KEYBOARD,
     )
 
 
@@ -1709,12 +1687,12 @@ async def step_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if mode == "mileage":
         session["mode"] = "price"
         save_session(update, session)
-        await ask_number_input(update, context, "price")
+        await send_clean_prompt(update, context, "Теперь напиши цену автомобиля.\nНапример: Цена - 850000")
         return
 
     session["mode"] = "mileage"
     save_session(update, session)
-    await ask_number_input(update, context, "mileage")
+    await send_clean_prompt(update, context, "Напиши пробег.\nНапример: Пробег - 125000")
 
 
 async def draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1919,7 +1897,7 @@ async def send_next_step(update: Update, session, context=None):
             await update.message.reply_text(STAGES[index][1], reply_markup=HIDE_KEYBOARD)
         return
     if context:
-        await ask_number_input(update, context, "price")
+        await send_clean_prompt(update, context, "Теперь напиши цену автомобиля.\nНапример: Цена - 850000")
     else:
         await update.message.reply_text("Теперь напиши цену автомобиля.\nНапример: Цена - 850000", reply_markup=HIDE_KEYBOARD)
 
@@ -2177,43 +2155,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     mode = session.get("mode")
 
-    if mode in ("price", "mileage") and text in {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "⌫", "✅ Готово"}:
-        value = session.get("number_value", "")
-        if text.isdigit():
-            value += text
-            session["number_value"] = value
-            save_session(update, session)
-            label = "Цена" if mode == "price" else "Пробег"
-            await update.message.reply_text(f"{label}: {value}", reply_markup=NUMBER_KEYBOARD)
-            return
-        if text == "⌫":
-            value = value[:-1]
-            session["number_value"] = value
-            save_session(update, session)
-            label = "Цена" if mode == "price" else "Пробег"
-            display = value or "не заполнено"
-            await update.message.reply_text(f"{label}: {display}", reply_markup=NUMBER_KEYBOARD)
-            return
-        if text == "✅ Готово":
-            if not value:
-                await update.message.reply_text("Сначала набери число.", reply_markup=NUMBER_KEYBOARD)
-                return
-            if mode == "price":
-                session["deal"]["deal"]["price"] = value
-                session["mode"] = "mileage"
-                session["number_value"] = ""
-                save_session(update, session)
-                await update.message.reply_text(f"Цена: {value}", reply_markup=HIDE_KEYBOARD)
-                await ask_number_input(update, context, "mileage")
-                return
-            session["deal"]["vehicle"]["mileage"] = value
-            session["mode"] = "edit"
-            session["number_value"] = ""
-            save_session(update, session)
-            await update.message.reply_text(f"Пробег: {value}", reply_markup=HIDE_KEYBOARD)
-            await update.message.reply_text("Записал пробег.", reply_markup=build_check_keyboard())
-            return
-
     if mode == "city":
         session["deal"]["deal"]["city"] = text
         session["mode"] = "date"
@@ -2237,7 +2178,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["deal"]["deal"]["price"] = text
         session["mode"] = "mileage"
         save_session(update, session)
-        await ask_number_input(update, context, "mileage")
+        await send_clean_prompt(update, context, "Напиши пробег.\nНапример: Пробег - 125000")
         return
 
     if mode == "mileage" and not parse_corrections(text):
