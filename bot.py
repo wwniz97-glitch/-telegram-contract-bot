@@ -232,6 +232,15 @@ PHONE_KEYBOARD = ReplyKeyboardMarkup(
     resize_keyboard=True,
     one_time_keyboard=True,
 )
+NUMBER_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["1", "2", "3"],
+        ["4", "5", "6"],
+        ["7", "8", "9"],
+        ["⌫", "0", "✅ Готово"],
+    ],
+    resize_keyboard=True,
+)
 
 MONTH_NAMES = [
     "",
@@ -835,33 +844,6 @@ def build_group_fields_keyboard(group_key):
     return InlineKeyboardMarkup(rows)
 
 
-def build_number_keyboard(target, value=""):
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("1", callback_data=f"num:{target}:digit:1"),
-                InlineKeyboardButton("2", callback_data=f"num:{target}:digit:2"),
-                InlineKeyboardButton("3", callback_data=f"num:{target}:digit:3"),
-            ],
-            [
-                InlineKeyboardButton("4", callback_data=f"num:{target}:digit:4"),
-                InlineKeyboardButton("5", callback_data=f"num:{target}:digit:5"),
-                InlineKeyboardButton("6", callback_data=f"num:{target}:digit:6"),
-            ],
-            [
-                InlineKeyboardButton("7", callback_data=f"num:{target}:digit:7"),
-                InlineKeyboardButton("8", callback_data=f"num:{target}:digit:8"),
-                InlineKeyboardButton("9", callback_data=f"num:{target}:digit:9"),
-            ],
-            [
-                InlineKeyboardButton("0", callback_data=f"num:{target}:digit:0"),
-                InlineKeyboardButton("⌫", callback_data=f"num:{target}:back"),
-                InlineKeyboardButton("✅", callback_data=f"num:{target}:done"),
-            ],
-        ]
-    )
-
-
 def build_all_fields_keyboard():
     rows = []
     row = []
@@ -943,7 +925,7 @@ async def ask_number_input(update: Update, context: ContextTypes.DEFAULT_TYPE, t
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=f"{text}\n\nТекущее значение: не заполнено",
-        reply_markup=build_number_keyboard(target),
+        reply_markup=NUMBER_KEYBOARD,
     )
 
 
@@ -2004,54 +1986,6 @@ async def handle_review_action(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.message.reply_text("Выбери раздел для исправления:", reply_markup=build_edit_keyboard())
 
 
-async def handle_number_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    parts = query.data.split(":")
-    target = parts[1]
-    action = parts[2]
-    session = get_session(update)
-    if not session:
-        await query.message.reply_text("Сначала нажми «Новый договор».", reply_markup=main_keyboard(update))
-        return
-
-    value = session.get("number_value", "")
-    if action == "digit":
-        value += parts[3]
-    elif action == "back":
-        value = value[:-1]
-    elif action == "done":
-        if not value:
-            await query.answer("Сначала набери число", show_alert=False)
-            return
-        if target == "price":
-            session["deal"]["deal"]["price"] = value
-            session["mode"] = "mileage"
-            session["number_value"] = ""
-            save_session(update, session)
-            await query.edit_message_text(f"Цена: {value}")
-            await ask_number_input(update, context, "mileage")
-            return
-        if target == "mileage":
-            session["deal"]["vehicle"]["mileage"] = value
-            session["mode"] = "edit"
-            session["number_value"] = ""
-            save_session(update, session)
-            await query.edit_message_text(f"Пробег: {value}")
-            await query.message.reply_text("Записал.", reply_markup=build_check_keyboard())
-            return
-
-    session["number_value"] = value
-    save_session(update, session)
-    label = "Цена" if target == "price" else "Пробег"
-    display = value or "не заполнено"
-    await query.edit_message_text(
-        f"{label}: {display}",
-        reply_markup=build_number_keyboard(target, value),
-    )
-
-
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     remember_incoming_message(update)
     text = update.message.text.strip()
@@ -2112,6 +2046,43 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     mode = session.get("mode")
+
+    if mode in ("price", "mileage") and text in {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "⌫", "✅ Готово"}:
+        value = session.get("number_value", "")
+        if text.isdigit():
+            value += text
+            session["number_value"] = value
+            save_session(update, session)
+            label = "Цена" if mode == "price" else "Пробег"
+            await update.message.reply_text(f"{label}: {value}", reply_markup=NUMBER_KEYBOARD)
+            return
+        if text == "⌫":
+            value = value[:-1]
+            session["number_value"] = value
+            save_session(update, session)
+            label = "Цена" if mode == "price" else "Пробег"
+            display = value or "не заполнено"
+            await update.message.reply_text(f"{label}: {display}", reply_markup=NUMBER_KEYBOARD)
+            return
+        if text == "✅ Готово":
+            if not value:
+                await update.message.reply_text("Сначала набери число.", reply_markup=NUMBER_KEYBOARD)
+                return
+            if mode == "price":
+                session["deal"]["deal"]["price"] = value
+                session["mode"] = "mileage"
+                session["number_value"] = ""
+                save_session(update, session)
+                await update.message.reply_text(f"Цена: {value}", reply_markup=HIDE_KEYBOARD)
+                await ask_number_input(update, context, "mileage")
+                return
+            session["deal"]["vehicle"]["mileage"] = value
+            session["mode"] = "edit"
+            session["number_value"] = ""
+            save_session(update, session)
+            await update.message.reply_text(f"Пробег: {value}", reply_markup=HIDE_KEYBOARD)
+            await update.message.reply_text("Записал пробег.", reply_markup=build_check_keyboard())
+            return
 
     if mode == "city":
         session["deal"]["deal"]["city"] = text
@@ -2175,7 +2146,6 @@ def main():
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CallbackQueryHandler(handle_calendar, pattern=r"^calendar:"))
     app.add_handler(CallbackQueryHandler(handle_review_action, pattern=r"^review:"))
-    app.add_handler(CallbackQueryHandler(handle_number_button, pattern=r"^num:"))
     app.add_handler(CallbackQueryHandler(handle_edit_button, pattern=r"^edit:"))
     app.add_handler(CallbackQueryHandler(handle_field_button, pattern=r"^field:"))
     app.add_handler(MessageHandler(filters.CONTACT, handle_contact))
