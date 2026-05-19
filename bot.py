@@ -1328,21 +1328,22 @@ def compact_join(parts):
 
 
 def party_summary(person):
-    passport = compact_join(
+    issued = compact_join(
         [
-            f"паспорт {person.get('passport_series_number', '')}" if person.get("passport_series_number") else "",
-            f"выдан {person.get('passport_issued_by', '')}" if person.get("passport_issued_by") else "",
             person.get("passport_issue_date", ""),
+            person.get("passport_issued_by", ""),
         ]
     )
     return compact_join(
         [
             person.get("full_name", ""),
-            f"{person.get('birth_date', '')} г.р." if person.get("birth_date") else "",
-            person.get("registration_address", ""),
-            passport,
+            f"род. {person.get('birth_date', '')}" if person.get("birth_date") else "",
+            f"адрес: {person.get('registration_address', '')}" if person.get("registration_address") else "",
+            f"паспорт: {person.get('passport_series_number', '')}" if person.get("passport_series_number") else "",
+            f"выдан: {issued}" if issued else "",
+            f"код подразделения: {person.get('department_code', '')}" if person.get("department_code") else "",
         ]
-    )
+    ) + ("," if person.get("full_name") else "")
 
 
 def split_sts_number(value):
@@ -1363,23 +1364,32 @@ def split_date(value):
     return day, month, year
 
 
+def apply_fill_style(run, size=10, bold=False, underline=False):
+    run.bold = bold
+    run.underline = underline
+    run.font.size = Pt(size)
+
+
 def set_paragraph_text(paragraph, value):
     if not value:
         return
     if not paragraph.runs:
-        paragraph.add_run(value)
+        run = paragraph.add_run(value)
+        apply_fill_style(run)
         return
     for run in paragraph.runs:
         run.text = ""
     paragraph.runs[0].text = value
+    apply_fill_style(paragraph.runs[0])
 
 
-def set_run_text(paragraph, run_index, value):
+def set_run_text(paragraph, run_index, value, size=10, bold=False, underline=False):
     if not value:
         return
     while len(paragraph.runs) <= run_index:
         paragraph.add_run("")
     paragraph.runs[run_index].text = str(value)
+    apply_fill_style(paragraph.runs[run_index], size=size, bold=bold, underline=underline)
 
 
 def is_autoru_template(document):
