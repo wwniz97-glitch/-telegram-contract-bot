@@ -13,7 +13,11 @@ from datetime import datetime
 from pathlib import Path
 
 from docx import Document
-from docx.shared import Pt
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Cm, Pt
 from dotenv import load_dotenv
 from openai import OpenAI
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
@@ -1239,6 +1243,219 @@ def add_paragraph(document, text="", bold=False):
     return paragraph
 
 
+def set_run_font(run, size=9, bold=False):
+    run.font.name = "Times New Roman"
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), "Times New Roman")
+    run.font.size = Pt(size)
+    run.bold = bold
+
+
+def set_paragraph_font(paragraph, size=9, bold=False):
+    for run in paragraph.runs:
+        set_run_font(run, size=size, bold=bold)
+
+
+def add_contract_paragraph(document, text="", size=9, bold=False, align=None, space_after=3):
+    paragraph = document.add_paragraph()
+    paragraph.paragraph_format.space_after = Pt(space_after)
+    paragraph.paragraph_format.line_spacing = 1.0
+    if align is not None:
+        paragraph.alignment = align
+    run = paragraph.add_run(text)
+    set_run_font(run, size=size, bold=bold)
+    return paragraph
+
+
+def set_cell_shading(cell, fill):
+    tc_pr = cell._tc.get_or_add_tcPr()
+    shading = tc_pr.find(qn("w:shd"))
+    if shading is None:
+        shading = OxmlElement("w:shd")
+        tc_pr.append(shading)
+    shading.set(qn("w:fill"), fill)
+
+
+def set_cell_text(cell, text="", size=8, bold=False, shade=None, align=None):
+    cell.text = ""
+    paragraph = cell.paragraphs[0]
+    paragraph.paragraph_format.space_after = Pt(0)
+    paragraph.paragraph_format.line_spacing = 1.0
+    if align is not None:
+        paragraph.alignment = align
+    run = paragraph.add_run(str(text or ""))
+    set_run_font(run, size=size, bold=bold)
+    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    if shade:
+        set_cell_shading(cell, shade)
+
+
+def add_section_heading(document, text):
+    return add_contract_paragraph(document, text, size=10, bold=True, space_after=4)
+
+
+def add_label_value_table(document, rows):
+    table = document.add_table(rows=len(rows), cols=4)
+    table.style = "Table Grid"
+    table.autofit = True
+    for row_index, row in enumerate(rows):
+        cells = table.rows[row_index].cells
+        for col_index, value in enumerate(row):
+            is_label = col_index % 2 == 0
+            set_cell_text(cells[col_index], value, size=8, bold=is_label, shade="F2F2F2" if is_label else None)
+    document.add_paragraph().paragraph_format.space_after = Pt(2)
+    return table
+
+
+def add_full_width_table(document, rows):
+    table = document.add_table(rows=len(rows), cols=2)
+    table.style = "Table Grid"
+    table.autofit = True
+    for row_index, (label, value) in enumerate(rows):
+        cells = table.rows[row_index].cells
+        set_cell_text(cells[0], label, size=8, bold=True, shade="F2F2F2")
+        set_cell_text(cells[1], value, size=8)
+    document.add_paragraph().paragraph_format.space_after = Pt(2)
+    return table
+
+
+def add_signatures_table(document, seller, buyer, price):
+    table = document.add_table(rows=4, cols=3)
+    table.style = "Table Grid"
+    headers = ["Сторона", "Подпись", "Расшифровка"]
+    for index, header in enumerate(headers):
+        set_cell_text(table.rows[0].cells[index], header, size=8, bold=True, shade="F2F2F2", align=WD_ALIGN_PARAGRAPH.CENTER)
+
+    rows = [
+        ("Продавец", "", seller.get("full_name", "")),
+        ("Денежные средства получил", "", seller.get("full_name", "")),
+        ("Покупатель", "", buyer.get("full_name", "")),
+    ]
+    for row_index, row in enumerate(rows, start=1):
+        for col_index, value in enumerate(row):
+            text = "____________________" if col_index == 1 else value
+            set_cell_text(table.rows[row_index].cells[col_index], text, size=8, align=WD_ALIGN_PARAGRAPH.CENTER)
+
+    money_paragraph = document.add_paragraph()
+    money_paragraph.paragraph_format.space_after = Pt(4)
+    run = money_paragraph.add_run(f"Денежные средства в сумме {price or ''} руб. получил.")
+    set_run_font(run, size=8)
+    return table
+
+
+def create_structured_contract_document(deal):
+    seller = deal["seller"]
+    buyer = deal["buyer"]
+    vehicle = deal["vehicle"]
+    deal_info = deal["deal"]
+    price_words = price_to_words(deal_info.get("price", ""))
+
+    document = Document()
+    section = document.sections[0]
+    section.top_margin = Cm(1.2)
+    section.bottom_margin = Cm(1.2)
+    section.left_margin = Cm(1.2)
+    section.right_margin = Cm(1.2)
+
+    style = document.styles["Normal"]
+    style.font.name = "Times New Roman"
+    style._element.rPr.rFonts.set(qn("w:eastAsia"), "Times New Roman")
+    style.font.size = Pt(9)
+
+    add_contract_paragraph(
+        document,
+        "Договор купли-продажи транспортного средства",
+        size=13,
+        bold=True,
+        align=WD_ALIGN_PARAGRAPH.CENTER,
+        space_after=6,
+    )
+    add_contract_paragraph(
+        document,
+        f"г. {deal_info.get('city', '')}    {deal_info.get('date', '')}",
+        size=9,
+        align=WD_ALIGN_PARAGRAPH.CENTER,
+        space_after=8,
+    )
+
+    add_section_heading(document, "Стороны договора")
+    add_full_width_table(
+        document,
+        [
+            ("Покупатель", party_summary(buyer).rstrip(",")),
+            ("Продавец", party_summary(seller).rstrip(",")),
+        ],
+    )
+    add_contract_paragraph(
+        document,
+        "именуемые далее при совместном упоминании «Стороны», а по отдельности «Сторона», заключили настоящий договор "
+        "(далее - «Договор») о нижеследующем:",
+        size=9,
+        space_after=6,
+    )
+
+    add_section_heading(document, "1. Предмет договора")
+    add_contract_paragraph(
+        document,
+        "Продавец обязуется передать в собственность Покупателя, а Покупатель - принять и оплатить транспортное средство "
+        "(далее - ТС).",
+    )
+    add_label_value_table(
+        document,
+        [
+            ("Марка и модель", vehicle.get("make_model", ""), "Год изготовления", vehicle.get("year", "")),
+            ("VIN", vehicle.get("vin", ""), "Тип ТС", vehicle.get("vehicle_type", "")),
+            ("Пробег, км", vehicle.get("mileage", ""), "Цвет кузова", vehicle.get("color", "")),
+            ("Мощность, л.с.", vehicle.get("engine_power", ""), "Объем, куб. см", vehicle.get("engine_volume", "")),
+            ("Модель двигателя", vehicle.get("engine_number", ""), "Номер двигателя", vehicle.get("engine_number", "")),
+            ("Номер шасси/рамы", vehicle.get("chassis_number", ""), "Номер кузова", vehicle.get("body_number", "")),
+            ("ПТС, серия/номер", vehicle.get("pts", ""), "Гос. номер", vehicle.get("license_plate", "")),
+            ("Кем выдан ПТС", vehicle.get("pts_issued_by", ""), "Дата выдачи ПТС", vehicle.get("pts_issue_date", "")),
+            ("СТС, серия/номер", vehicle.get("sts", ""), "Кем выдан СТС", vehicle.get("sts_issued_by", "")),
+            ("Дата выдачи СТС", vehicle.get("sts_issue_date", ""), "Собственник до передачи", seller.get("full_name", "")),
+        ],
+    )
+    add_contract_paragraph(
+        document,
+        "Право собственности на ТС переходит к Покупателю с момента подписания настоящего Договора. Передача ТС "
+        "осуществляется Продавцом в момент передачи Покупателем Продавцу денежных средств в счет оплаты стоимости ТС "
+        "согласно п. 2 Договора.",
+    )
+
+    add_section_heading(document, "2. Стоимость ТС и порядок расчетов")
+    add_contract_paragraph(
+        document,
+        f"2.1. Стоимость ТС составляет {deal_info.get('price', '')} ({price_words}) рублей (НДС не облагается). "
+        "Оплата стоимости ТС производится путем 100% предоплаты наличным или безналичным расчетом.",
+    )
+
+    add_section_heading(document, "3. Гарантии и ответственность")
+    add_contract_paragraph(document, "Продавец гарантирует Покупателю, что:")
+    add_contract_paragraph(document, "3.1. Продавец является собственником ТС.")
+    add_contract_paragraph(
+        document,
+        "3.2. ТС не является предметом обязательств Продавца перед третьими лицами, в том числе не является предметом "
+        "залога, в отношении ТС не наложен запрет на совершение регистрационных действий, ТС не находится под арестом, "
+        "не числится в базах данных МВД России как угнанное или похищенное транспортное средство и не имеет иных обременений.",
+    )
+    add_contract_paragraph(
+        document,
+        "3.3. В случае нарушения гарантий, указанных в п. 3.1 - 3.2 настоящего договора, Продавец обязуется "
+        "незамедлительно возвратить Покупателю стоимость ТС в полном объеме со дня обнаружения соответствующего нарушения.",
+    )
+
+    add_section_heading(document, "4. Заключительные положения")
+    add_contract_paragraph(
+        document,
+        "Настоящий Договор вступает в силу после его подписания Сторонами и действует до момента полного исполнения "
+        "Сторонами своих обязательств по Договору. Договор составлен в трех экземплярах, имеющих равную юридическую силу.",
+    )
+
+    add_section_heading(document, "5. Подписи и реквизиты Сторон")
+    add_signatures_table(document, seller, buyer, deal_info.get("price", ""))
+
+    return document
+
+
 def price_to_words(price):
     digits = re.sub(r"\D+", "", str(price))
     if not digits:
@@ -1509,55 +1726,7 @@ def create_contract(deal, chat):
     OUTPUT_DIR.mkdir(exist_ok=True)
     filename = OUTPUT_DIR / f"dogovor_kuply_prodazhi_{chat}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
 
-    seller = deal["seller"]
-    buyer = deal["buyer"]
-    vehicle = deal["vehicle"]
-    deal_info = deal["deal"]
-
-    if TEMPLATE_FILE.exists():
-        document = Document(TEMPLATE_FILE)
-        fill_template_document(document, build_template_replacements(deal))
-        fill_autoru_template_document(document, deal)
-        document.save(filename)
-        return filename
-
-    document = Document()
-    document.add_heading("Договор купли-продажи транспортного средства", level=1)
-    add_paragraph(document, f"г. {deal_info['city']}                                           {deal_info['date']}")
-    add_paragraph(document)
-    add_paragraph(
-        document,
-        f"{seller['full_name']}, паспорт {seller['passport_series_number']}, выдан {seller['passport_issued_by']} "
-        f"{seller['passport_issue_date']}, код подразделения {seller['department_code']}, зарегистрированный(ая) по адресу: "
-        f"{seller['registration_address']}, именуемый(ая) далее 'Продавец', с одной стороны, и {buyer['full_name']}, "
-        f"паспорт {buyer['passport_series_number']}, выдан {buyer['passport_issued_by']} {buyer['passport_issue_date']}, "
-        f"код подразделения {buyer['department_code']}, зарегистрированный(ая) по адресу: {buyer['registration_address']}, "
-        f"именуемый(ая) далее 'Покупатель', с другой стороны, заключили настоящий договор о нижеследующем:"
-    )
-    add_paragraph(document, "1. Предмет договора", bold=True)
-    add_paragraph(
-        document,
-        f"Продавец продает, а Покупатель покупает транспортное средство: {vehicle['make_model']}, "
-        f"год выпуска {vehicle['year']}, VIN {vehicle['vin']}, цвет {vehicle['color']}, "
-        f"государственный регистрационный знак {vehicle['license_plate']}, ПТС {vehicle['pts']}, "
-        f"СТС {vehicle['sts']}, номер кузова {vehicle['body_number']}, номер двигателя {vehicle['engine_number']}."
-    )
-    add_paragraph(document, "2. Цена договора", bold=True)
-    add_paragraph(document, f"Стоимость транспортного средства составляет {deal_info['price']} рублей.")
-    add_paragraph(document, "3. Передача транспортного средства", bold=True)
-    add_paragraph(
-        document,
-        "Продавец подтверждает получение денежных средств, а Покупатель подтверждает получение транспортного средства, "
-        "ключей и документов. Стороны претензий друг к другу не имеют."
-    )
-    add_paragraph(document, "4. Подписи сторон", bold=True)
-    add_paragraph(document)
-    add_paragraph(document, f"Продавец: __________________ / {seller['full_name']} /")
-    add_paragraph(document)
-    add_paragraph(document, f"Покупатель: ________________ / {buyer['full_name']} /")
-    add_paragraph(document)
-    add_paragraph(document, "Перед подписанием обязательно проверьте все данные и актуальные требования закона.")
-
+    document = create_structured_contract_document(deal)
     document.save(filename)
     return filename
 
