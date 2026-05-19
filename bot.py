@@ -1821,9 +1821,10 @@ async def send_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
     document_message = await update.effective_message.reply_document(document=path.open("rb"), filename=path.name)
     increment_user_stat(update, "contracts_created")
     await delete_tracked_messages(update, context)
+    menu_message = await update.effective_message.reply_text("Договор готов. Можно начать новый договор.", reply_markup=main_keyboard(update))
     session = get_session(update)
     if session:
-        session["message_ids"] = [document_message.message_id]
+        session["message_ids"] = [document_message.message_id, menu_message.message_id]
         save_session(update, session)
 
 
