@@ -16,7 +16,7 @@ from docx import Document
 from docx.shared import Pt
 from dotenv import load_dotenv
 from openai import OpenAI
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 load_dotenv()
@@ -225,6 +225,7 @@ ADMIN_MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [*MAIN_KEYBOARD_ROWS, ["📊 Админ"]],
     resize_keyboard=True,
 )
+HIDE_KEYBOARD = ReplyKeyboardRemove()
 
 PHONE_KEYBOARD = ReplyKeyboardMarkup(
     [[KeyboardButton("📱 Отправить номер телефона", request_contact=True)]],
@@ -618,7 +619,7 @@ async def send_clean_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     message = await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=text,
-        reply_markup=main_keyboard(update),
+        reply_markup=HIDE_KEYBOARD,
     )
     session = get_session(update)
     if session:
@@ -804,6 +805,63 @@ def build_edit_keyboard():
     return InlineKeyboardMarkup(rows)
 
 
+def build_review_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("📄 Создать договор", callback_data="review:create"),
+                InlineKeyboardButton("✏️ Исправить данные", callback_data="review:edit"),
+            ]
+        ]
+    )
+
+
+def build_check_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔍 Проверить данные", callback_data="review:show")]])
+
+
+def build_group_fields_keyboard(group_key):
+    group = EDIT_GROUPS[group_key]
+    rows = []
+    row = []
+    for field in group["fields"]:
+        row.append(InlineKeyboardButton(f"{field_icon(field)} {FIELD_LABELS[field]}", callback_data=f"field:{field}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("⬅️ К разделам", callback_data="review:edit")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_number_keyboard(target, value=""):
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("1", callback_data=f"num:{target}:digit:1"),
+                InlineKeyboardButton("2", callback_data=f"num:{target}:digit:2"),
+                InlineKeyboardButton("3", callback_data=f"num:{target}:digit:3"),
+            ],
+            [
+                InlineKeyboardButton("4", callback_data=f"num:{target}:digit:4"),
+                InlineKeyboardButton("5", callback_data=f"num:{target}:digit:5"),
+                InlineKeyboardButton("6", callback_data=f"num:{target}:digit:6"),
+            ],
+            [
+                InlineKeyboardButton("7", callback_data=f"num:{target}:digit:7"),
+                InlineKeyboardButton("8", callback_data=f"num:{target}:digit:8"),
+                InlineKeyboardButton("9", callback_data=f"num:{target}:digit:9"),
+            ],
+            [
+                InlineKeyboardButton("0", callback_data=f"num:{target}:digit:0"),
+                InlineKeyboardButton("⌫", callback_data=f"num:{target}:back"),
+                InlineKeyboardButton("✅", callback_data=f"num:{target}:done"),
+            ],
+        ]
+    )
+
+
 def build_all_fields_keyboard():
     rows = []
     row = []
@@ -873,6 +931,19 @@ async def ask_contract_date(update: Update):
     await update.message.reply_text(
         "Выбери дату договора:",
         reply_markup=build_calendar(today.year, today.month),
+    )
+
+
+async def ask_number_input(update: Update, context: ContextTypes.DEFAULT_TYPE, target):
+    session = get_session(update)
+    if session:
+        session["number_value"] = ""
+        save_session(update, session)
+    text = "Введи цену автомобиля:" if target == "price" else "Введи пробег:"
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=f"{text}\n\nТекущее значение: не заполнено",
+        reply_markup=build_number_keyboard(target),
     )
 
 
@@ -1096,6 +1167,8 @@ def recognize_document(photo_path, stage):
 - Серия и номер СТС часто напечатаны внизу документа отдельной строкой без явной подписи.
 - Ищи 10 цифр в формате "12 34 567890" или "1234 567890"; это номер СТС, запиши его в sts.
 - Даже если остальные поля уже найдены, не оставляй sts пустым, пока не проверишь низ фото.
+- На первой стороне СТС "кем выдано" обычно находится прямо над строкой "Дата выдачи". Этот орган запиши в sts_issued_by.
+- Если рядом с датой выдачи есть 1-3 строки с названием подразделения/организации, объедини их в одну строку и запиши в sts_issued_by.
 """.strip()
 
     prompt = f"""
@@ -1129,6 +1202,7 @@ def recognize_document(photo_path, stage):
 - ФИО собирай из фамилии, имени и отчества как одну строку.
 - Если это СТС, переписывай только данные, которые реально видны на отправленной стороне СТС.
 - Для СТС первая сторона обычно содержит марку/модель, VIN, год, цвет и госномер.
+- На первой стороне СТС орган, кем выдано свидетельство, обычно напечатан над датой выдачи. Запиши его в sts_issued_by.
 - Для СТС вторая сторона обычно содержит серию и номер свидетельства о регистрации ТС. Это поле записывай в sts.
 - Номер СТС часто расположен в самом низу документа. Проверь нижний край фото отдельно.
 - Номер СТС может быть подписан как "Свидетельство о регистрации ТС", "Регистрационный документ", "серия", "номер" или быть напечатан отдельной крупной строкой без подписи.
@@ -1136,6 +1210,7 @@ def recognize_document(photo_path, stage):
 - Не путай номер СТС с госномером, VIN, ПТС, номером кузова, номером двигателя или кодом подразделения.
 - Если это вторая сторона СТС и номер СТС виден четко, поле sts обязательно должно быть заполнено.
 - Если на СТС видны кем выдано свидетельство и дата выдачи, запиши их в sts_issued_by и sts_issue_date.
+- Если на СТС видна дата выдачи, обязательно проверь строку или несколько строк над этой датой: обычно это "кем выдано СТС".
 - Если кем выдано СТС или дата выдачи СТС не видны, оставь соответствующее поле пустым.
 - Если видны тип ТС, мощность двигателя в л.с. или кВт, рабочий объем в куб. см, номер двигателя, номер шасси/рамы или номер кузова, перепиши их.
 - Если это ПТС, переписывай данные автомобиля, тип ТС, мощность, рабочий объем и номер ПТС только с фото ПТС.
@@ -1523,26 +1598,25 @@ async def step_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if mode == "mileage":
         session["mode"] = "price"
         save_session(update, session)
-        await send_clean_prompt(update, context, "Теперь напиши цену автомобиля.\nНапример: Цена - 850000")
+        await ask_number_input(update, context, "price")
         return
 
     session["mode"] = "mileage"
     save_session(update, session)
-    await send_clean_prompt(update, context, "Напиши пробег.\nНапример: Пробег - 125000")
+    await ask_number_input(update, context, "mileage")
 
 
 async def draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await delete_incoming_message(update, context)
     session = get_session(update)
     if not session:
-        await update.message.reply_text("Сначала нажми «Новый договор».", reply_markup=main_keyboard(update))
+        await update.effective_message.reply_text("Сначала нажми «Новый договор».", reply_markup=main_keyboard(update))
         return
     text = format_deal(session["deal"])
     if session.get("pending", 0):
         text += "\n\nНекоторые фото еще обрабатываются. Проверь еще раз через минуту."
-    await send_tracked_message(update, context, text[:3900], reply_markup=main_keyboard(update))
-    await send_tracked_message(update, context, "Исправить по разделам:", reply_markup=build_edit_keyboard())
-    await send_tracked_message(update, context, "Или выбери конкретное поле:", reply_markup=build_all_fields_keyboard())
+    await send_tracked_message(update, context, "Показываю данные:", reply_markup=HIDE_KEYBOARD)
+    await send_tracked_message(update, context, text[:3900], reply_markup=build_review_keyboard())
 
 
 async def set_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1587,26 +1661,26 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await delete_incoming_message(update, context)
     session = get_session(update)
     if not session:
-        await update.message.reply_text("Сначала нажми «Новый договор».", reply_markup=main_keyboard(update))
+        await update.effective_message.reply_text("Сначала нажми «Новый договор».", reply_markup=main_keyboard(update))
         return
 
     remaining = remaining_contracts(update)
     if remaining == 0:
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             "Лимит тестовых генераций закончился. В тестовом режиме доступно только 2 договора.",
             reply_markup=main_keyboard(update),
         )
         return
 
     if session.get("pending", 0):
-        await update.message.reply_text("Фото еще обрабатываются. Подожди немного и нажми «Создать договор» еще раз.")
+        await update.effective_message.reply_text("Фото еще обрабатываются. Подожди немного и нажми «Создать договор» еще раз.")
         return
 
     missing = missing_fields(session["deal"])
     if missing:
         lines = ["Не хватает данных. Нажми «Исправить поле» и допиши:"]
         lines.extend(FIELD_LABELS[field] for field in missing)
-        await update.message.reply_text("\n".join(lines), reply_markup=main_keyboard(update))
+        await update.effective_message.reply_text("\n".join(lines), reply_markup=main_keyboard(update))
         return
 
     if PAYMENTS_ENABLED:
@@ -1633,7 +1707,7 @@ async def send_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     path = create_contract(session["deal"], chat_id(update))
-    document_message = await update.message.reply_document(document=path.open("rb"), filename=path.name)
+    document_message = await update.effective_message.reply_document(document=path.open("rb"), filename=path.name)
     increment_user_stat(update, "contracts_created")
     await delete_tracked_messages(update, context)
     session = get_session(update)
@@ -1730,13 +1804,12 @@ async def send_next_step(update: Update, session, context=None):
         if context:
             await send_clean_prompt(update, context, STAGES[index][1])
         else:
-            await update.message.reply_text(STAGES[index][1], reply_markup=main_keyboard(update))
+            await update.message.reply_text(STAGES[index][1], reply_markup=HIDE_KEYBOARD)
         return
-    text = "Теперь напиши цену автомобиля.\nНапример: Цена - 850000"
     if context:
-        await send_clean_prompt(update, context, text)
+        await ask_number_input(update, context, "price")
     else:
-        await update.message.reply_text(text, reply_markup=main_keyboard(update))
+        await update.message.reply_text("Теперь напиши цену автомобиля.\nНапример: Цена - 850000", reply_markup=HIDE_KEYBOARD)
 
 
 async def recognize_photo_background(bot, chat, deal_id, file_id, photo_path, stage, reply_keyboard):
@@ -1818,7 +1891,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             file_id,
             photo_path,
             stage,
-            main_keyboard(update),
+            HIDE_KEYBOARD,
         )
     )
     await send_next_step(update, session, context)
@@ -1858,12 +1931,12 @@ async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tip_message = await context.bot.send_message(
             chat_id=query.message.chat_id,
             text=PHOTO_TIP,
-            reply_markup=main_keyboard(update),
+            reply_markup=HIDE_KEYBOARD,
         )
         message = await context.bot.send_message(
             chat_id=query.message.chat_id,
             text=STAGES[session["stage_index"]][1],
-            reply_markup=main_keyboard(update),
+            reply_markup=HIDE_KEYBOARD,
         )
         session["last_prompt_message_id"] = message.message_id
         message_ids = session.setdefault("message_ids", [])
@@ -1889,7 +1962,12 @@ async def handle_edit_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     session["mode"] = "edit"
     save_session(update, session)
-    await send_tracked_message(update, context, format_edit_group(session["deal"], group_key), reply_markup=main_keyboard(update))
+    await send_tracked_message(
+        update,
+        context,
+        format_edit_group(session["deal"], group_key),
+        reply_markup=build_group_fields_keyboard(group_key),
+    )
 
 
 async def handle_field_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1907,8 +1985,71 @@ async def handle_field_button(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     session["mode"] = "edit"
     save_session(update, session)
-    await send_tracked_message(update, context, "Исправь строку ниже и отправь обратно:", reply_markup=main_keyboard(update))
+    await send_tracked_message(update, context, "Исправь строку ниже и отправь обратно:", reply_markup=HIDE_KEYBOARD)
     await send_tracked_message(update, context, format_edit_field(session["deal"], field))
+
+
+async def handle_review_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    action = query.data.split(":", 1)[1]
+    if action == "show":
+        await draft(update, context)
+        return
+    if action == "create":
+        await confirm(update, context)
+        return
+    if action == "edit":
+        await query.message.reply_text("Выбери раздел для исправления:", reply_markup=build_edit_keyboard())
+
+
+async def handle_number_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    parts = query.data.split(":")
+    target = parts[1]
+    action = parts[2]
+    session = get_session(update)
+    if not session:
+        await query.message.reply_text("Сначала нажми «Новый договор».", reply_markup=main_keyboard(update))
+        return
+
+    value = session.get("number_value", "")
+    if action == "digit":
+        value += parts[3]
+    elif action == "back":
+        value = value[:-1]
+    elif action == "done":
+        if not value:
+            await query.answer("Сначала набери число", show_alert=False)
+            return
+        if target == "price":
+            session["deal"]["deal"]["price"] = value
+            session["mode"] = "mileage"
+            session["number_value"] = ""
+            save_session(update, session)
+            await query.edit_message_text(f"Цена: {value}")
+            await ask_number_input(update, context, "mileage")
+            return
+        if target == "mileage":
+            session["deal"]["vehicle"]["mileage"] = value
+            session["mode"] = "edit"
+            session["number_value"] = ""
+            save_session(update, session)
+            await query.edit_message_text(f"Пробег: {value}")
+            await query.message.reply_text("Записал.", reply_markup=build_check_keyboard())
+            return
+
+    session["number_value"] = value
+    save_session(update, session)
+    label = "Цена" if target == "price" else "Пробег"
+    display = value or "не заполнено"
+    await query.edit_message_text(
+        f"{label}: {display}",
+        reply_markup=build_number_keyboard(target, value),
+    )
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1987,7 +2128,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["deal"]["deal"]["date"] = date
         session["mode"] = "photos"
         save_session(update, session)
-        await update.message.reply_text(PHOTO_TIP, reply_markup=main_keyboard(update))
+        await update.message.reply_text(PHOTO_TIP, reply_markup=HIDE_KEYBOARD)
         await send_next_step(update, session, context)
         return
 
@@ -1995,14 +2136,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["deal"]["deal"]["price"] = text
         session["mode"] = "mileage"
         save_session(update, session)
-        await update.message.reply_text("Записал цену. Теперь напиши пробег.\nНапример: Пробег - 125000", reply_markup=main_keyboard(update))
+        await ask_number_input(update, context, "mileage")
         return
 
     if mode == "mileage" and not parse_corrections(text):
         session["deal"]["vehicle"]["mileage"] = text
         session["mode"] = "edit"
         save_session(update, session)
-        await update.message.reply_text("Записал пробег. Теперь нажми «Проверить данные».", reply_markup=main_keyboard(update))
+        await update.message.reply_text("Записал пробег.", reply_markup=build_check_keyboard())
         return
 
     corrections = parse_corrections(text)
@@ -2011,7 +2152,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             set_value(session["deal"], field, value)
         session["mode"] = "edit"
         save_session(update, session)
-        await update.message.reply_text("Записал. Нажми «Проверить данные».", reply_markup=main_keyboard(update))
+        await update.message.reply_text("Записал.", reply_markup=build_check_keyboard())
         return
 
     await update.message.reply_text("Не понял. Можно нажать кнопку ниже.", reply_markup=main_keyboard(update))
@@ -2033,6 +2174,8 @@ def main():
     app.add_handler(CommandHandler("confirm", confirm))
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CallbackQueryHandler(handle_calendar, pattern=r"^calendar:"))
+    app.add_handler(CallbackQueryHandler(handle_review_action, pattern=r"^review:"))
+    app.add_handler(CallbackQueryHandler(handle_number_button, pattern=r"^num:"))
     app.add_handler(CallbackQueryHandler(handle_edit_button, pattern=r"^edit:"))
     app.add_handler(CallbackQueryHandler(handle_field_button, pattern=r"^field:"))
     app.add_handler(MessageHandler(filters.CONTACT, handle_contact))
